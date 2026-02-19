@@ -140,6 +140,40 @@ function buildMockWorkoutPlan({ minutes, focus, objective, soreness }) {
   ].join("\n");
 }
 
+function parseWorkoutPlan(planText) {
+  const lines = planText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const sections = [];
+  let current = null;
+  for (const line of lines) {
+    const titleMatch = line.match(/^\d+\)\s*(.+)$/);
+    if (titleMatch) {
+      current = { title: titleMatch[1], items: [] };
+      sections.push(current);
+      continue;
+    }
+    const bulletMatch = line.match(/^[-*]\s*(.+)$/);
+    if (bulletMatch) {
+      if (!current) {
+        current = { title: "Plan Details", items: [] };
+        sections.push(current);
+      }
+      current.items.push(bulletMatch[1]);
+      continue;
+    }
+
+    if (!current) {
+      current = { title: "Plan Summary", items: [] };
+      sections.push(current);
+    }
+    current.items.push(line);
+  }
+  return sections;
+}
+
 export default function App() {
   const initialAiMode = import.meta.env.VITE_AI_MODE === "live" ? "live" : "mock";
   const [auth, setAuth] = useState(() => loadAuth());
@@ -170,7 +204,7 @@ export default function App() {
   const [planText, setPlanText] = useState("");
   const [planLoading, setPlanLoading] = useState(false);
   const [aiMode, setAiMode] = useState(() => localStorage.getItem(AI_MODE_KEY) || initialAiMode);
-  const [page, setPage] = useState("workout");
+  const [page, setPage] = useState("home");
   const [tab, setTab] = useState("sessions");
   const [chartRange, setChartRange] = useState("90d");
 
@@ -228,6 +262,8 @@ export default function App() {
       volume: totalVolume,
     };
   }, [sessions]);
+
+  const planSections = useMemo(() => parseWorkoutPlan(planText), [planText]);
 
   const progress = useMemo(() => {
     const chronological = [...sessions].sort(
@@ -337,18 +373,22 @@ export default function App() {
   function createSession(event) {
     event.preventDefault();
     if (!canCreateSession) return;
+    startWorkoutNow(sessionName.trim());
+  }
 
+  function startWorkoutNow(workoutName) {
+    const name = workoutName?.trim() || "Workout";
     const created = {
       id: crypto.randomUUID(),
-      name: sessionName.trim(),
+      name,
       complete: false,
       createdAt: new Date().toISOString(),
       exercises: [],
     };
-
     setSessions((prev) => [created, ...prev]);
     setActiveSessionId(created.id);
     setTab("exercises");
+    setPage("log");
   }
 
   function deleteSession(sessionId) {
@@ -416,6 +456,7 @@ export default function App() {
       return;
     }
     setAuth({ loggedIn: true, name: found.name, walletAddress });
+    setPage("home");
     setPassword("");
     setAuthError("");
   }
@@ -443,6 +484,7 @@ export default function App() {
     };
     setUsers((prev) => [nextUser, ...prev]);
     setAuth({ loggedIn: true, name: trimmedName, walletAddress });
+    setPage("home");
     setPassword("");
     setAuthError("");
   }
@@ -491,6 +533,7 @@ export default function App() {
 
   function logout() {
     setAuth({ loggedIn: false, name: "", walletAddress: walletAddress || "" });
+    setPage("home");
     setPassword("");
     setAuthError("");
   }
@@ -821,113 +864,107 @@ Format response exactly as:
           </div>
         </header>
 
-        <nav className="mb-6 grid grid-cols-2 gap-2 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-1">
+        <nav className="mb-6 grid grid-cols-4 gap-2 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-1">
           <button
             type="button"
-            onClick={() => setPage("workout")}
+            onClick={() => setPage("home")}
             className={[
               "min-h-11 rounded-xl px-3 py-2 text-sm font-medium",
-              page === "workout" ? "bg-white text-black" : "bg-transparent text-zinc-300",
+              page === "home" ? "bg-white text-black" : "bg-transparent text-zinc-300",
             ].join(" ")}
           >
-            Workout
+            Home
           </button>
           <button
             type="button"
-            onClick={() => setPage("charts")}
+            onClick={() => setPage("log")}
             className={[
               "min-h-11 rounded-xl px-3 py-2 text-sm font-medium",
-              page === "charts" ? "bg-white text-black" : "bg-transparent text-zinc-300",
+              page === "log" ? "bg-white text-black" : "bg-transparent text-zinc-300",
             ].join(" ")}
           >
-            Charts
+            Log
+          </button>
+          <button
+            type="button"
+            onClick={() => setPage("start")}
+            className={[
+              "min-h-11 rounded-xl px-3 py-2 text-sm font-medium",
+              page === "start" ? "bg-white text-black" : "bg-transparent text-zinc-300",
+            ].join(" ")}
+          >
+            Start
+          </button>
+          <button
+            type="button"
+            onClick={() => setPage("dashboard")}
+            className={[
+              "min-h-11 rounded-xl px-3 py-2 text-sm font-medium",
+              page === "dashboard" ? "bg-white text-black" : "bg-transparent text-zinc-300",
+            ].join(" ")}
+          >
+            Dashboard
           </button>
         </nav>
 
-        {page === "workout" ? (
-          <>
-            <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <h2 className="text-xl font-semibold">AI Workout Planner</h2>
-                  <p className="mt-1 text-sm text-zinc-400">
-                    Build a custom workout from your time and goal.
-                  </p>
-                  <p className="mt-1 text-xs text-zinc-500">
-                    Mode: {aiMode === "live" ? "Live GPT (uses tokens)" : "Mock Test (no tokens)"}
-                  </p>
-                </div>
+        {page === "home" ? (
+          <section className="grid gap-6">
+            <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+              <h2 className="text-xl font-semibold">How do you want to proceed?</h2>
+              <p className="mt-1 text-sm text-zinc-400">
+                Pick a path to continue your training workflow.
+              </p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 <button
                   type="button"
-                  onClick={() => setAiMode((prev) => (prev === "live" ? "mock" : "live"))}
-                  className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900"
+                  onClick={() => setPage("log")}
+                  className="rounded-2xl border border-zinc-700 bg-zinc-950 p-4 text-left hover:bg-zinc-900"
                 >
-                  Switch to {aiMode === "live" ? "Mock" : "Live"}
+                  <p className="text-base font-semibold">Log Workout</p>
+                  <p className="mt-1 text-sm text-zinc-400">Add sets, reps, and weights to a session.</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPage("start")}
+                  className="rounded-2xl border border-zinc-700 bg-zinc-950 p-4 text-left hover:bg-zinc-900"
+                >
+                  <p className="text-base font-semibold">Start Workout</p>
+                  <p className="mt-1 text-sm text-zinc-400">Create a quick session or generate a plan with AI.</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPage("dashboard")}
+                  className="rounded-2xl border border-zinc-700 bg-zinc-950 p-4 text-left hover:bg-zinc-900"
+                >
+                  <p className="text-base font-semibold">Dashboard</p>
+                  <p className="mt-1 text-sm text-zinc-400">Review performance and volume trends.</p>
                 </button>
               </div>
+            </article>
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <label className="grid gap-2">
-                  <span className="text-sm text-zinc-300">Minutes Available</span>
-                  <input
-                    type="number"
-                    min="20"
-                    step="5"
-                    value={planMinutes}
-                    onChange={(event) => setPlanMinutes(event.target.value)}
-                    className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
-                  />
-                </label>
-                <label className="grid gap-2">
-                  <span className="text-sm text-zinc-300">Focus Muscle</span>
-                  <input
-                    value={planFocus}
-                    onChange={(event) => setPlanFocus(event.target.value)}
-                    placeholder="Chest"
-                    className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
-                  />
-                </label>
-              </div>
-
-              <label className="mt-3 grid gap-2">
-                <span className="text-sm text-zinc-300">Goal</span>
-                <textarea
-                  value={planObjective}
-                  onChange={(event) => setPlanObjective(event.target.value)}
-                  rows={3}
-                  className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
-                />
-              </label>
-
-              <label className="mt-3 inline-flex items-center gap-2 text-sm text-zinc-300">
-                <input
-                  type="checkbox"
-                  checked={planSoreness}
-                  onChange={(event) => setPlanSoreness(event.target.checked)}
-                />
-                Make it high stimulus (likely sore tomorrow)
-              </label>
-
-              <button
-                type="button"
-                onClick={generateWorkoutPlan}
-                disabled={planLoading}
-                className="mt-4 min-h-11 w-full rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40 sm:w-auto"
-              >
-                {planLoading ? "Planning..." : "Generate Workout Plan"}
-              </button>
-
-              {planText ? (
-                <pre className="mt-4 whitespace-pre-wrap rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-100">
-                  {planText}
-                </pre>
-              ) : (
-                <p className="mt-4 text-sm text-zinc-400">
-                  Example: 45 minutes, chest, and goal to build size with high soreness.
+            <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Sessions</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">{totals.sessions}</p>
+              </article>
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Exercises Logged</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">{totals.exercises}</p>
+              </article>
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Sets Completed</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">{totals.sets}</p>
+              </article>
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Completion Rate</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">
+                  {progress.completionRate.toFixed(0)}%
                 </p>
-              )}
+              </article>
             </section>
-
+          </section>
+        ) : page === "log" ? (
+          <>
             <section className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
               <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
                 <p className="text-sm text-zinc-400">Sessions</p>
@@ -1226,8 +1263,157 @@ Format response exactly as:
               </section>
             </div>
           </>
-        ) : (
+        ) : page === "start" ? (
           <section className="grid gap-6">
+            <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+              <h2 className="text-xl font-semibold">Start Workout</h2>
+              <p className="mt-1 text-sm text-zinc-400">Start instantly, then log details in the Log tab.</p>
+              <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                {["Push Day", "Pull Day", "Leg Day"].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => startWorkoutNow(preset)}
+                    className="min-h-11 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-900"
+                  >
+                    Start {preset}
+                  </button>
+                ))}
+              </div>
+            </article>
+
+            <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h2 className="text-xl font-semibold">AI Workout Planner</h2>
+                  <p className="mt-1 text-sm text-zinc-400">
+                    Build a custom workout from your time and goal.
+                  </p>
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Mode: {aiMode === "live" ? "Live GPT (uses tokens)" : "Mock Test (no tokens)"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAiMode((prev) => (prev === "live" ? "mock" : "live"))}
+                  className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900"
+                >
+                  Switch to {aiMode === "live" ? "Mock" : "Live"}
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-2">
+                  <span className="text-sm text-zinc-300">Minutes Available</span>
+                  <input
+                    type="number"
+                    min="20"
+                    step="5"
+                    value={planMinutes}
+                    onChange={(event) => setPlanMinutes(event.target.value)}
+                    className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm text-zinc-300">Focus Muscle</span>
+                  <input
+                    value={planFocus}
+                    onChange={(event) => setPlanFocus(event.target.value)}
+                    placeholder="Chest"
+                    className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
+                  />
+                </label>
+              </div>
+
+              <label className="mt-3 grid gap-2">
+                <span className="text-sm text-zinc-300">Goal</span>
+                <textarea
+                  value={planObjective}
+                  onChange={(event) => setPlanObjective(event.target.value)}
+                  rows={3}
+                  className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
+                />
+              </label>
+
+              <label className="mt-3 inline-flex items-center gap-2 text-sm text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={planSoreness}
+                  onChange={(event) => setPlanSoreness(event.target.checked)}
+                />
+                Make it high stimulus (likely sore tomorrow)
+              </label>
+
+              <button
+                type="button"
+                onClick={generateWorkoutPlan}
+                disabled={planLoading}
+                className="mt-4 min-h-11 w-full rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40 sm:w-auto"
+              >
+                {planLoading ? "Planning..." : "Generate Workout Plan"}
+              </button>
+            </article>
+
+            {!planText ? (
+              <p className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4 text-zinc-300">
+                Example: 45 minutes, chest, and goal to build size with high soreness.
+              </p>
+            ) : (
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+                <div className="mb-4 flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full bg-zinc-800 px-3 py-1 text-zinc-200">
+                    {Number(planMinutes) || 45} min
+                  </span>
+                  <span className="rounded-full bg-zinc-800 px-3 py-1 text-zinc-200">
+                    Focus: {planFocus || "Chest"}
+                  </span>
+                  <span className="rounded-full bg-zinc-800 px-3 py-1 text-zinc-200">
+                    {planSoreness ? "High Stimulus" : "Moderate Stimulus"}
+                  </span>
+                </div>
+
+                <div className="grid gap-3">
+                  {planSections.map((section) => (
+                    <section key={section.title} className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                      <h3 className="text-base font-semibold text-zinc-100">{section.title}</h3>
+                      <ul className="mt-2 grid gap-2 text-sm text-zinc-300">
+                        {section.items.map((item) => (
+                          <li key={`${section.title}-${item}`} className="rounded-lg bg-zinc-900/70 px-3 py-2">
+                            {item}
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  ))}
+                </div>
+              </article>
+            )}
+          </section>
+        ) : page === "dashboard" ? (
+          <section className="grid gap-6">
+            <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+              <h2 className="text-xl font-semibold">Dashboard Home</h2>
+              <p className="mt-1 text-sm text-zinc-400">
+                Snapshot of your consistency, volume, and recent trend.
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPage("log")}
+                  className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
+                >
+                  Go to Log
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPage("start")}
+                  className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
+                >
+                  Start a Workout
+                </button>
+              </div>
+            </article>
+
             <div className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
               <p className="mb-3 text-sm text-zinc-400">Time Range</p>
               <div className="grid grid-cols-4 gap-2">
@@ -1379,7 +1565,7 @@ Format response exactly as:
               </div>
             )}
           </section>
-        )}
+        ) : null}
       </div>
     </main>
   );
