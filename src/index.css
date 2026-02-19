@@ -1,1 +1,29 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  font-family:
+    "Sora",
+    "Avenir Next",
+    "Segoe UI Variable",
+    "Segoe UI",
+    sans-serif;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 15% 10%, #083344 0%, transparent 35%),
+    radial-gradient(circle at 90% 85%, #14532d 0%, transparent 30%),
+    #09090b;
+  -webkit-tap-highlight-color: transparent;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: contain;
+}

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 const STORAGE_KEY = "fitness_app_sessions_v2";
+const AUTH_KEY = "fitness_app_auth_v1";
 
 function loadSessions() {
   try {
@@ -16,6 +17,26 @@ function saveSessions(sessions) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
 }
 
+function loadAuth() {
+  try {
+    const raw = localStorage.getItem(AUTH_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== "object") {
+      return { loggedIn: false, name: "" };
+    }
+    return {
+      loggedIn: Boolean(parsed.loggedIn),
+      name: typeof parsed.name === "string" ? parsed.name : "",
+    };
+  } catch {
+    return { loggedIn: false, name: "" };
+  }
+}
+
+function saveAuth(auth) {
+  localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+}
+
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString(undefined, {
     weekday: "short",
@@ -25,6 +46,10 @@ function formatDate(iso) {
 }
 
 export default function App() {
+  const [auth, setAuth] = useState(() => loadAuth());
+  const [displayName, setDisplayName] = useState(() => loadAuth().name || "");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
   const [sessions, setSessions] = useState(() => loadSessions());
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [search, setSearch] = useState("");
@@ -35,9 +60,15 @@ export default function App() {
   const [weight, setWeight] = useState("0");
   const [aiText, setAiText] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
-  const [tab, setTab] = useState("log");
+  const [page, setPage] = useState("workout");
+  const [tab, setTab] = useState("sessions");
+  const [chartRange, setChartRange] = useState("90d");
 
 
+
+  useEffect(() => {
+    saveAuth(auth);
+  }, [auth]);
 
   useEffect(() => {
     saveSessions(sessions);
@@ -80,7 +111,103 @@ export default function App() {
     };
   }, [sessions]);
 
+  const progress = useMemo(() => {
+    const chronological = [...sessions].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+
+    const rangeDays = {
+      "7d": 7,
+      "30d": 30,
+      "90d": 90,
+      all: null,
+    }[chartRange];
+
+    const now = Date.now();
+    const filteredSessions =
+      rangeDays == null
+        ? chronological
+        : chronological.filter((session) => {
+            const createdAt = new Date(session.createdAt).getTime();
+            if (Number.isNaN(createdAt)) return false;
+            return now - createdAt <= rangeDays * 24 * 60 * 60 * 1000;
+          });
+
+    const points = filteredSessions.slice(-10).map((session) => {
+      const exercises = session.exercises ?? [];
+      const volume = exercises.reduce(
+        (sum, exercise) => sum + exercise.sets * exercise.reps * exercise.weight,
+        0
+      );
+      const sets = exercises.reduce((sum, exercise) => sum + exercise.sets, 0);
+      return {
+        id: session.id,
+        name: session.name,
+        date: session.createdAt,
+        complete: session.complete,
+        exercises: exercises.length,
+        sets,
+        volume,
+      };
+    });
+
+    const cumulative = [];
+    let runningVolume = 0;
+    for (const point of points) {
+      runningVolume += point.volume;
+      cumulative.push({
+        id: point.id,
+        date: point.date,
+        value: runningVolume,
+      });
+    }
+
+    const totalComplete = filteredSessions.filter((session) => session.complete).length;
+    const completionRate = filteredSessions.length
+      ? (totalComplete / filteredSessions.length) * 100
+      : 0;
+    const avgVolume = points.length
+      ? points.reduce((sum, point) => sum + point.volume, 0) / points.length
+      : 0;
+    const maxVolume = points.length ? Math.max(...points.map((point) => point.volume), 1) : 1;
+
+    const exerciseMap = new Map();
+    for (const session of filteredSessions) {
+      for (const exercise of session.exercises ?? []) {
+        const key = exercise.name.trim().toLowerCase();
+        if (!key) continue;
+        const entry = exerciseMap.get(key) ?? {
+          name: exercise.name.trim(),
+          count: 0,
+          volume: 0,
+        };
+        entry.count += 1;
+        entry.volume += exercise.sets * exercise.reps * exercise.weight;
+        exerciseMap.set(key, entry);
+      }
+    }
+
+    const topExercises = [...exerciseMap.values()]
+      .sort((a, b) => b.volume - a.volume)
+      .slice(0, 5);
+    const topExerciseMax = topExercises.length
+      ? Math.max(...topExercises.map((exercise) => exercise.volume), 1)
+      : 1;
+
+    return {
+      points,
+      cumulative,
+      completionRate,
+      avgVolume,
+      maxVolume,
+      filteredSessionCount: filteredSessions.length,
+      topExercises,
+      topExerciseMax,
+    };
+  }, [sessions, chartRange]);
+
   const canCreateSession = sessionName.trim().length > 0;
+  const canLogin = displayName.trim().length >= 2 && password.trim().length >= 4;
   const canAddExercise =
     activeSession &&
     exerciseName.trim().length > 0 &&
@@ -102,6 +229,7 @@ export default function App() {
 
     setSessions((prev) => [created, ...prev]);
     setActiveSessionId(created.id);
+    setTab("exercises");
   }
 
   function deleteSession(sessionId) {
@@ -154,6 +282,23 @@ export default function App() {
           : session
       )
     );
+  }
+
+  function login(event) {
+    event.preventDefault();
+    if (!canLogin) {
+      setAuthError("Use at least 2 characters for name and 4 for password.");
+      return;
+    }
+    setAuth({ loggedIn: true, name: displayName.trim() });
+    setPassword("");
+    setAuthError("");
+  }
+
+  function logout() {
+    setAuth({ loggedIn: false, name: "" });
+    setPassword("");
+    setAuthError("");
   }
 
   async function getAiFeedback() {
@@ -228,38 +373,164 @@ export default function App() {
   }
   
 
+  if (!auth.loggedIn) {
+    return (
+      <main className="min-h-dvh overflow-hidden bg-zinc-950 text-zinc-100">
+        <div className="relative mx-auto flex min-h-dvh w-full max-w-md items-center px-4 py-8">
+          <div className="pointer-events-none absolute inset-0 opacity-80">
+            <div className="absolute -top-20 left-[-30%] h-72 w-72 rounded-full bg-cyan-400/20 blur-3xl" />
+            <div className="absolute -bottom-24 right-[-20%] h-80 w-80 rounded-full bg-emerald-400/20 blur-3xl" />
+          </div>
+
+          <section className="relative w-full rounded-[2rem] border border-zinc-800/80 bg-zinc-900/70 p-6 shadow-[0_25px_80px_rgba(0,0,0,0.45)] backdrop-blur">
+            <p className="text-xs uppercase tracking-[0.28em] text-zinc-400">Fitness App</p>
+            <h1 className="mt-4 text-3xl font-semibold leading-tight">
+              Train smarter,
+              <br />
+              track every set.
+            </h1>
+            <p className="mt-3 text-sm text-zinc-300">
+              Your sessions stay private on this device. Sign in to continue.
+            </p>
+
+            <form onSubmit={login} className="mt-6 grid gap-4">
+              <label className="grid gap-2">
+                <span className="text-sm text-zinc-300">Name</span>
+                <input
+                  value={displayName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                  placeholder="Alex"
+                  className="min-h-12 rounded-2xl border border-zinc-700 bg-zinc-950/70 px-4 py-3 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/20"
+                />
+              </label>
+              <label className="grid gap-2">
+                <span className="text-sm text-zinc-300">Password</span>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="********"
+                  className="min-h-12 rounded-2xl border border-zinc-700 bg-zinc-950/70 px-4 py-3 outline-none transition focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/20"
+                />
+              </label>
+
+              {authError ? <p className="text-sm text-rose-300">{authError}</p> : null}
+
+              <button
+                type="submit"
+                disabled={!canLogin}
+                className="min-h-12 rounded-2xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Enter App
+              </button>
+            </form>
+
+            <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 text-xs text-zinc-400">
+              Demo login only for now. Next step can be signup/reset/biometric flows.
+            </div>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-dvh overflow-x-hidden bg-zinc-950 text-zinc-100">
-      <div className="mx-auto w-full max-w-6xl px-4 pt-5 pb-24 sm:px-6 sm:pt-6 lg:px-8">
-        <header className="mb-6">
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Workout App</h1>
-          <p className="mt-2 max-w-2xl text-sm text-zinc-300 sm:text-base">
-            Track sessions, log lifts, and keep your progress on this device.
-          </p>
+      <div className="mx-auto w-full max-w-6xl px-4 pt-5 pb-[calc(6rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-6 lg:px-8 lg:pb-12">
+        <header className="mb-6 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Workout App</h1>
+            <p className="mt-2 max-w-2xl text-sm text-zinc-300 sm:text-base">
+              Welcome back, {auth.name || "Athlete"}.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={logout}
+            className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
+          >
+            Log out
+          </button>
         </header>
 
-        <section className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
-            <p className="text-sm text-zinc-400">Sessions</p>
-            <p className="mt-1 text-xl font-semibold sm:text-2xl">{totals.sessions}</p>
-          </article>
-          <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
-            <p className="text-sm text-zinc-400">Exercises Logged</p>
-            <p className="mt-1 text-xl font-semibold sm:text-2xl">{totals.exercises}</p>
-          </article>
-          <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
-            <p className="text-sm text-zinc-400">Sets Completed</p>
-            <p className="mt-1 text-xl font-semibold sm:text-2xl">{totals.sets}</p>
-          </article>
-          <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
-            <p className="text-sm text-zinc-400">Total Volume</p>
-            <p className="mt-1 text-xl font-semibold sm:text-2xl">{totals.volume.toLocaleString()} kg</p>
-          </article>
-        </section>
+        <nav className="mb-6 grid grid-cols-2 gap-2 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-1">
+          <button
+            type="button"
+            onClick={() => setPage("workout")}
+            className={[
+              "min-h-11 rounded-xl px-3 py-2 text-sm font-medium",
+              page === "workout" ? "bg-white text-black" : "bg-transparent text-zinc-300",
+            ].join(" ")}
+          >
+            Workout
+          </button>
+          <button
+            type="button"
+            onClick={() => setPage("charts")}
+            className={[
+              "min-h-11 rounded-xl px-3 py-2 text-sm font-medium",
+              page === "charts" ? "bg-white text-black" : "bg-transparent text-zinc-300",
+            ].join(" ")}
+          >
+            Charts
+          </button>
+        </nav>
 
-        <div className="grid gap-6 lg:grid-cols-2">
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
-            <h2 className="text-xl font-semibold">Sessions</h2>
+        {page === "workout" ? (
+          <>
+            <section className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Sessions</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">{totals.sessions}</p>
+              </article>
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Exercises Logged</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">{totals.exercises}</p>
+              </article>
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Sets Completed</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">{totals.sets}</p>
+              </article>
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Total Volume</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">
+                  {totals.volume.toLocaleString()} kg
+                </p>
+              </article>
+            </section>
+
+            <nav className="mb-4 grid grid-cols-2 gap-2 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-1 lg:hidden">
+              <button
+                type="button"
+                onClick={() => setTab("sessions")}
+                className={[
+                  "min-h-11 rounded-xl px-3 py-2 text-sm font-medium",
+                  tab === "sessions" ? "bg-white text-black" : "bg-transparent text-zinc-300",
+                ].join(" ")}
+              >
+                Sessions
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab("exercises")}
+                className={[
+                  "min-h-11 rounded-xl px-3 py-2 text-sm font-medium",
+                  tab === "exercises" ? "bg-white text-black" : "bg-transparent text-zinc-300",
+                ].join(" ")}
+              >
+                Exercise Log
+              </button>
+            </nav>
+
+            <div className="grid gap-6 lg:grid-cols-2">
+              <section
+                className={[
+                  "rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4",
+                  tab === "sessions" ? "block" : "hidden",
+                  "lg:block",
+                ].join(" ")}
+              >
+                <h2 className="text-xl font-semibold">Sessions</h2>
 
             <form onSubmit={createSession} className="mt-4 flex flex-col gap-2 sm:flex-row">
               <input
@@ -304,7 +575,10 @@ export default function App() {
                         <button
                           type="button"
                           className="min-w-0 flex-1 text-left"
-                          onClick={() => setActiveSessionId(session.id)}
+                          onClick={() => {
+                            setActiveSessionId(session.id);
+                            setTab("exercises");
+                          }}
                         >
                           <p className="break-words text-lg font-semibold">{session.name}</p>
                           <p className="mt-1 text-sm text-zinc-400">
@@ -343,13 +617,19 @@ export default function App() {
                 })
               )}
             </div>
-          </section>
+              </section>
 
-          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
-            <h2 className="text-xl font-semibold">Exercise Log</h2>
-            <p className="mt-1 text-sm text-zinc-400">
-              {activeSession ? `Adding to: ${activeSession.name}` : "Select a session first"}
-            </p>
+              <section
+                className={[
+                  "rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4",
+                  tab === "exercises" ? "block" : "hidden",
+                  "lg:block",
+                ].join(" ")}
+              >
+                <h2 className="text-xl font-semibold">Exercise Log</h2>
+                <p className="mt-1 text-sm text-zinc-400">
+                  {activeSession ? `Adding to: ${activeSession.name}` : "Select a session first"}
+                </p>
 
             <form onSubmit={addExercise} className="mt-4 grid gap-4">
               <label className="grid gap-2">
@@ -481,8 +761,163 @@ export default function App() {
                 </ul>
               )}
             </div>
+              </section>
+            </div>
+          </>
+        ) : (
+          <section className="grid gap-6">
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+              <p className="mb-3 text-sm text-zinc-400">Time Range</p>
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  { value: "7d", label: "7D" },
+                  { value: "30d", label: "30D" },
+                  { value: "90d", label: "90D" },
+                  { value: "all", label: "All" },
+                ].map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setChartRange(option.value)}
+                    className={[
+                      "min-h-10 rounded-xl px-2 py-2 text-sm font-medium",
+                      chartRange === option.value
+                        ? "bg-white text-black"
+                        : "bg-zinc-950 text-zinc-300",
+                    ].join(" ")}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Completion Rate</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">
+                  {progress.completionRate.toFixed(0)}%
+                </p>
+              </article>
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Avg Session Volume</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">
+                  {Math.round(progress.avgVolume).toLocaleString()} kg
+                </p>
+              </article>
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Best Session</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">
+                  {progress.maxVolume.toLocaleString()} kg
+                </p>
+              </article>
+              <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-sm text-zinc-400">Tracked Sessions</p>
+                <p className="mt-1 text-xl font-semibold sm:text-2xl">
+                  {progress.filteredSessionCount}
+                </p>
+              </article>
+            </div>
+
+            {progress.points.length === 0 ? (
+              <p className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4 text-zinc-300">
+                No chart data in this time range yet.
+              </p>
+            ) : (
+              <div className="grid gap-6 lg:grid-cols-2">
+                <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+                  <h2 className="text-lg font-semibold">Session Volume History</h2>
+                  <p className="mt-1 text-sm text-zinc-400">Last {progress.points.length} sessions</p>
+                  <div className="mt-4 flex h-52 items-end gap-2">
+                    {progress.points.map((point) => {
+                      const height = Math.max((point.volume / progress.maxVolume) * 100, 4);
+                      return (
+                        <div key={point.id} className="flex min-w-0 flex-1 flex-col items-center gap-2">
+                          <div className="text-[10px] text-zinc-500">{point.volume.toLocaleString()}</div>
+                          <div
+                            className="w-full rounded-t-md bg-white/80"
+                            style={{ height: `${height}%` }}
+                            title={`${point.name}: ${point.volume.toLocaleString()} kg`}
+                          />
+                          <div className="text-[10px] text-zinc-400">{formatDate(point.date)}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </article>
+
+                <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+                  <h2 className="text-lg font-semibold">Cumulative Volume Trend</h2>
+                  <p className="mt-1 text-sm text-zinc-400">Running total in selected range</p>
+                  <svg viewBox="0 0 100 40" className="mt-4 h-52 w-full rounded-xl bg-zinc-950 p-2">
+                    {(() => {
+                      const maxY = Math.max(
+                        ...progress.cumulative.map((point) => point.value),
+                        1
+                      );
+                      const points = progress.cumulative
+                        .map((point, index) => {
+                          const x =
+                            progress.cumulative.length === 1
+                              ? 0
+                              : (index / (progress.cumulative.length - 1)) * 100;
+                          const y = 38 - (point.value / maxY) * 34;
+                          return `${x},${y}`;
+                        })
+                        .join(" ");
+                      return (
+                        <>
+                          <polyline fill="none" stroke="rgb(82 82 91)" strokeWidth="0.7" points="0,38 100,38" />
+                          <polyline
+                            fill="none"
+                            stroke="rgb(244 244 245)"
+                            strokeWidth="1.4"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            points={points}
+                          />
+                        </>
+                      );
+                    })()}
+                  </svg>
+                </article>
+
+                <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4 lg:col-span-2">
+                  <h2 className="text-lg font-semibold">Top Exercises by Volume</h2>
+                  <p className="mt-1 text-sm text-zinc-400">Highest total load in selected range</p>
+                  <div className="mt-4 grid gap-3">
+                    {progress.topExercises.length === 0 ? (
+                      <p className="rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-zinc-300">
+                        No exercise data yet.
+                      </p>
+                    ) : (
+                      progress.topExercises.map((exercise) => {
+                        const width = Math.max(
+                          (exercise.volume / progress.topExerciseMax) * 100,
+                          8
+                        );
+                        return (
+                          <div key={exercise.name} className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="min-w-0 truncate font-medium">{exercise.name}</p>
+                              <p className="text-sm text-zinc-300">
+                                {exercise.volume.toLocaleString()} kg
+                              </p>
+                            </div>
+                            <div className="mt-2 h-2 rounded-full bg-zinc-800">
+                              <div className="h-2 rounded-full bg-white" style={{ width: `${width}%` }} />
+                            </div>
+                            <p className="mt-1 text-xs text-zinc-500">{exercise.count} entries logged</p>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </article>
+              </div>
+            )}
           </section>
-        </div>
+        )}
       </div>
     </main>
   );
