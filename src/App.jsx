@@ -174,6 +174,45 @@ function parseWorkoutPlan(planText) {
   return sections;
 }
 
+function buildMockNextStepRecommendation({ activeSession, targetExercise, sessions }) {
+  const lift = targetExercise?.trim() || "current exercise";
+  const allEntries = sessions
+    .flatMap((session) => session.exercises ?? [])
+    .filter((exercise) => exercise.name.trim().toLowerCase() === lift.toLowerCase())
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  const lastEntry = allEntries[allEntries.length - 1] ?? null;
+  const referenceWeight = lastEntry ? Number(lastEntry.weight) : 20;
+  const warmup1 = Math.max(Math.round(referenceWeight * 0.45), 10);
+  const warmup2 = Math.max(Math.round(referenceWeight * 0.65), 15);
+  const working1 = Math.max(Math.round(referenceWeight * 0.85), 20);
+  const working2 = Math.max(Math.round(referenceWeight * 0.95), 22);
+  const working3 = Math.max(Math.round(referenceWeight), 25);
+  const stepUp = referenceWeight >= 40 ? 2.5 : 1.25;
+
+  return [
+    `Next Step for ${lift}`,
+    `Session: ${activeSession?.name || "Workout"}`,
+    "",
+    "Warm-up ramp",
+    `- Set 1: ${warmup1} kg x 12 reps`,
+    `- Set 2: ${warmup2} kg x 8 reps`,
+    "- Rest 60-90 sec between warm-up sets",
+    "",
+    "Working progression",
+    `- Set 1: ${working1} kg x 10 reps`,
+    `- Set 2: ${working2} kg x 8 reps`,
+    `- Set 3: ${working3} kg x AMRAP (leave 1 rep in reserve)`,
+    "",
+    "Coach note",
+    lastEntry
+      ? `Last logged ${lift}: ${lastEntry.sets}x${lastEntry.reps} @ ${lastEntry.weight} kg. If bar path is clean, add ${stepUp} kg next session.`
+      : `No prior ${lift} logs found. Start conservative and add ${stepUp} kg only if reps stay clean.`,
+    "",
+    "(Test mode: local mock recommendation, no API tokens used.)",
+  ].join("\n");
+}
+
 export default function App() {
   const initialAiMode = import.meta.env.VITE_AI_MODE === "live" ? "live" : "mock";
   const [auth, setAuth] = useState(() => loadAuth());
@@ -193,6 +232,8 @@ export default function App() {
   const [weight, setWeight] = useState("0");
   const [aiText, setAiText] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
+  const [nextStepText, setNextStepText] = useState("");
+  const [nextStepLoading, setNextStepLoading] = useState(false);
   const [planMinutes, setPlanMinutes] = useState("45");
   const [planFocus, setPlanFocus] = useState("Chest");
   const [planObjective, setPlanObjective] = useState(
@@ -237,6 +278,21 @@ export default function App() {
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
     [sessions, activeSessionId]
   );
+
+  const suggestedLifts = useMemo(() => {
+    if (!activeSession) return [];
+    const name = activeSession.name.toLowerCase();
+    if (name.includes("push") || name.includes("chest")) {
+      return ["Barbell Bench Press", "Incline Dumbbell Press", "Cable Fly", "Seated Shoulder Press"];
+    }
+    if (name.includes("pull") || name.includes("back")) {
+      return ["Deadlift", "Lat Pulldown", "Chest-Supported Row", "Face Pull"];
+    }
+    if (name.includes("leg")) {
+      return ["Back Squat", "Romanian Deadlift", "Leg Press", "Walking Lunge"];
+    }
+    return ["Bench Press", "Squat", "Deadlift", "Overhead Press"];
+  }, [activeSession]);
 
   const totals = useMemo(() => {
     const allExercises = sessions.flatMap((session) => session.exercises ?? []);
@@ -607,6 +663,102 @@ export default function App() {
     }
   }
 
+  async function getAiNextStepRecommendation(exerciseOverride) {
+    if (!activeSession) return;
+    const targetExercise = (exerciseOverride || exerciseName).trim();
+    if (!targetExercise) {
+      setNextStepText("Pick or type an exercise first, then ask AI Next Step.");
+      return;
+    }
+
+    setNextStepLoading(true);
+    setNextStepText("");
+    try {
+      if (aiMode !== "live") {
+        setNextStepText(
+          buildMockNextStepRecommendation({
+            activeSession,
+            targetExercise,
+            sessions,
+          })
+        );
+        return;
+      }
+
+      const apiKey = import.meta.env.VITE_OPENROUTER_API_KEY;
+      if (!apiKey) {
+        throw new Error(
+          "Missing VITE_OPENROUTER_API_KEY. Add it to .env.local and restart the dev server."
+        );
+      }
+
+      const history = sessions
+        .flatMap((session) =>
+          (session.exercises ?? []).map((exercise) => ({
+            session: session.name,
+            date: exercise.createdAt,
+            name: exercise.name,
+            sets: exercise.sets,
+            reps: exercise.reps,
+            weight: exercise.weight,
+          }))
+        )
+        .filter((item) => item.name.trim().toLowerCase() === targetExercise.toLowerCase())
+        .slice(-8);
+
+      const prompt = `
+You are a hypertrophy strength coach.
+Recommend the immediate next step for this workout.
+User wants guidance on warm-up weight and working-set progression.
+
+Context:
+- Active session: ${activeSession.name}
+- Target lift: ${targetExercise}
+- Current session exercises: ${JSON.stringify(activeSession.exercises ?? [], null, 2)}
+- Recent logs for target lift: ${JSON.stringify(history, null, 2)}
+
+Return format:
+1) Warm-up ramp (2-3 sets with exact weights/reps)
+2) Working progression (3-4 sets with exact weights/reps/rest)
+3) Technique cue (1 short line)
+4) Stop rule (when to reduce weight)
+      `.trim();
+
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text);
+      }
+
+      const data = await res.json();
+      const content = data?.choices?.[0]?.message?.content ?? "No response.";
+      setNextStepText(content);
+    } catch (error) {
+      setNextStepText(
+        `Live recommendation failed, showing local mock recommendation.\nError: ${String(
+          error
+        )}\n\n${buildMockNextStepRecommendation({
+          activeSession,
+          targetExercise,
+          sessions,
+        })}`
+      );
+    } finally {
+      setNextStepLoading(false);
+    }
+  }
+
   async function generateWorkoutPlan() {
     setPlanLoading(true);
     setPlanText("");
@@ -974,6 +1126,57 @@ Format response exactly as:
                 <p className="mt-1 text-sm text-zinc-400">
                   {activeSession ? `Adding to: ${activeSession.name}` : "Start a workout first"}
                 </p>
+                {activeSession ? (
+                  <div className="mt-4 grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                      <p className="text-sm font-medium text-zinc-200">Recommended Lifts</p>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        Tap a lift to auto-fill and get next-step guidance.
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {suggestedLifts.map((lift) => (
+                          <button
+                            key={lift}
+                            type="button"
+                            onClick={() => {
+                              setExerciseName(lift);
+                              getAiNextStepRecommendation(lift);
+                            }}
+                            className="min-h-9 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-900"
+                          >
+                            {lift}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium text-zinc-200">AI Next Step</p>
+                        <button
+                          type="button"
+                          onClick={() => getAiNextStepRecommendation()}
+                          disabled={nextStepLoading}
+                          className="min-h-8 rounded-lg border border-zinc-700 px-2 py-1 text-xs text-zinc-200 disabled:opacity-50"
+                        >
+                          {nextStepLoading ? "Thinking..." : "Recommend"}
+                        </button>
+                      </div>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        Uses current lift: {exerciseName.trim() || "none selected"}
+                      </p>
+                      {nextStepText ? (
+                        <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded-lg border border-zinc-800 bg-zinc-900/70 p-2 text-xs text-zinc-200">
+                          {nextStepText}
+                        </pre>
+                      ) : (
+                        <p className="mt-2 text-xs text-zinc-500">
+                          Choose a lift, then get warm-up and progression guidance.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
                 {activeSession ? (
                   <div className="mt-3 flex flex-wrap gap-2">
                     <button
