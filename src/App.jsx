@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 
 const STORAGE_KEY = "fitness_app_sessions_v2";
 const AUTH_KEY = "fitness_app_auth_v1";
+const USERS_KEY = "fitness_app_users_v1";
+const AI_MODE_KEY = "fitness_app_ai_mode_v1";
 
 function loadSessions() {
   try {
@@ -17,19 +19,34 @@ function saveSessions(sessions) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
 }
 
+function loadUsers() {
+  try {
+    const raw = localStorage.getItem(USERS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveUsers(users) {
+  localStorage.setItem(USERS_KEY, JSON.stringify(users));
+}
+
 function loadAuth() {
   try {
     const raw = localStorage.getItem(AUTH_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
     if (!parsed || typeof parsed !== "object") {
-      return { loggedIn: false, name: "" };
+      return { loggedIn: false, name: "", walletAddress: "" };
     }
     return {
       loggedIn: Boolean(parsed.loggedIn),
       name: typeof parsed.name === "string" ? parsed.name : "",
+      walletAddress: typeof parsed.walletAddress === "string" ? parsed.walletAddress : "",
     };
   } catch {
-    return { loggedIn: false, name: "" };
+    return { loggedIn: false, name: "", walletAddress: "" };
   }
 }
 
@@ -45,11 +62,95 @@ function formatDate(iso) {
   });
 }
 
+function buildMockCoachFeedback(sessionSummary) {
+  const exercises = sessionSummary.exercises ?? [];
+  const totalSets = exercises.reduce((sum, item) => sum + Number(item.sets || 0), 0);
+  const totalVolume = exercises.reduce(
+    (sum, item) => sum + Number(item.sets || 0) * Number(item.reps || 0) * Number(item.weight || 0),
+    0
+  );
+  const topExercise = [...exercises].sort((a, b) => {
+    const aVol = Number(a.sets || 0) * Number(a.reps || 0) * Number(a.weight || 0);
+    const bVol = Number(b.sets || 0) * Number(b.reps || 0) * Number(b.weight || 0);
+    return bVol - aVol;
+  })[0];
+  const topExerciseText = topExercise
+    ? `${topExercise.exercise} (${topExercise.sets}x${topExercise.reps} @ ${topExercise.weight} kg)`
+    : "No top movement yet.";
+  const avgSets = exercises.length ? (totalSets / exercises.length).toFixed(1) : "0.0";
+
+  return [
+    "1) Quick summary",
+    `Solid ${sessionSummary.name} session: ${exercises.length} exercises, ${totalSets} sets, ${totalVolume.toLocaleString()} kg total volume.`,
+    `Top lift today: ${topExerciseText}`,
+    "",
+    "2) What to improve next session",
+    `- Progress one anchor lift by +1 rep or +2.5 kg while keeping form strict.`,
+    `- Keep effort balanced: average sets per exercise is ${avgSets}; add one back-off set if energy is good.`,
+    "- Keep rest times consistent (90-150 sec compounds, 60-90 sec accessories) to improve comparability.",
+    "",
+    "3) Optional: form/safety reminder",
+    "Prioritize full range of motion and stop any set that causes sharp pain.",
+    "",
+    "(Test mode: local mock coach response, no API tokens used.)",
+  ].join("\n");
+}
+
+function buildMockWorkoutPlan({ minutes, focus, objective, soreness }) {
+  const focusLabel = focus || "chest";
+  const totalMinutes = Math.max(Number(minutes) || 45, 20);
+  const warmupMinutes = 6;
+  const finisherMinutes = soreness ? 8 : 5;
+  const workMinutes = Math.max(totalMinutes - warmupMinutes - finisherMinutes, 10);
+  const blockMinutes = Math.floor(workMinutes / 3);
+  const repStyle = soreness ? "8-12 reps with controlled eccentric" : "6-10 reps";
+
+  return [
+    `Workout Plan (${totalMinutes} min) - Focus: ${focusLabel}`,
+    `Goal: ${objective || "Build muscle size with hard, high-quality sets."}`,
+    "",
+    `1) Warm-up (${warmupMinutes} min)`,
+    "- 2 rounds: band pull-aparts x15, incline push-ups x10, shoulder circles x20 sec",
+    "- 2 progressive warm-up sets on first press movement",
+    "",
+    `2) Main Block A (${blockMinutes} min)`,
+    `- Incline dumbbell press: 4 sets x ${repStyle}, rest 90 sec`,
+    "- Last set: rest-pause (10-15 sec pause, then 2-4 extra reps)",
+    "",
+    `3) Main Block B (${blockMinutes} min)`,
+    "- Flat machine or barbell press: 3-4 sets x 6-10 reps, rest 2 min",
+    "- Pair with cable fly: 3 sets x 12-15 reps, rest 60 sec",
+    "",
+    `4) Finisher (${finisherMinutes} min)`,
+    soreness
+      ? "- Push-up mechanical drop set x 2 rounds to near failure"
+      : "- Pec-deck or cable fly 2 sets x 15-20 reps",
+    soreness
+      ? "- Dumbbell fly stretch hold 30 sec between rounds"
+      : "- Slow eccentric on final set (3 sec lowering)",
+    "",
+    "Intensity notes",
+    "- Keep 1-2 reps in reserve on first working sets, then push final set near failure.",
+    "- Prioritize full range and chest stretch at bottom of pressing/fly movements.",
+    "",
+    "Progression for next session",
+    "- Add 1 rep per set before increasing load by 2.5-5%.",
+    "",
+    "(Test mode: local mock workout planner, no API tokens used.)",
+  ].join("\n");
+}
+
 export default function App() {
+  const initialAiMode = import.meta.env.VITE_AI_MODE === "live" ? "live" : "mock";
   const [auth, setAuth] = useState(() => loadAuth());
+  const [users, setUsers] = useState(() => loadUsers());
+  const [authMode, setAuthMode] = useState("signin");
   const [displayName, setDisplayName] = useState(() => loadAuth().name || "");
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState("");
+  const [walletAddress, setWalletAddress] = useState(() => loadAuth().walletAddress || "");
+  const [walletBusy, setWalletBusy] = useState(false);
+  const [walletError, setWalletError] = useState("");
   const [sessions, setSessions] = useState(() => loadSessions());
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [search, setSearch] = useState("");
@@ -60,6 +161,15 @@ export default function App() {
   const [weight, setWeight] = useState("0");
   const [aiText, setAiText] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
+  const [planMinutes, setPlanMinutes] = useState("45");
+  const [planFocus, setPlanFocus] = useState("Chest");
+  const [planObjective, setPlanObjective] = useState(
+    "Make me sore tomorrow and focused on getting a bigger chest."
+  );
+  const [planSoreness, setPlanSoreness] = useState(true);
+  const [planText, setPlanText] = useState("");
+  const [planLoading, setPlanLoading] = useState(false);
+  const [aiMode, setAiMode] = useState(() => localStorage.getItem(AI_MODE_KEY) || initialAiMode);
   const [page, setPage] = useState("workout");
   const [tab, setTab] = useState("sessions");
   const [chartRange, setChartRange] = useState("90d");
@@ -71,8 +181,16 @@ export default function App() {
   }, [auth]);
 
   useEffect(() => {
+    saveUsers(users);
+  }, [users]);
+
+  useEffect(() => {
     saveSessions(sessions);
   }, [sessions]);
+
+  useEffect(() => {
+    localStorage.setItem(AI_MODE_KEY, aiMode);
+  }, [aiMode]);
 
   useEffect(() => {
     if (sessions.length === 0) {
@@ -208,6 +326,7 @@ export default function App() {
 
   const canCreateSession = sessionName.trim().length > 0;
   const canLogin = displayName.trim().length >= 2 && password.trim().length >= 4;
+  const canCreateAccount = displayName.trim().length >= 2 && password.trim().length >= 6;
   const canAddExercise =
     activeSession &&
     exerciseName.trim().length > 0 &&
@@ -290,13 +409,88 @@ export default function App() {
       setAuthError("Use at least 2 characters for name and 4 for password.");
       return;
     }
-    setAuth({ loggedIn: true, name: displayName.trim() });
+    const normalizedName = displayName.trim().toLowerCase();
+    const found = users.find((user) => user.name.toLowerCase() === normalizedName);
+    if (!found || found.password !== password) {
+      setAuthError("Invalid name or password.");
+      return;
+    }
+    setAuth({ loggedIn: true, name: found.name, walletAddress });
     setPassword("");
     setAuthError("");
   }
 
+  function createAccount(event) {
+    event.preventDefault();
+    if (!canCreateAccount) {
+      setAuthError("Create account needs 2+ char name and 6+ char password.");
+      return;
+    }
+
+    const trimmedName = displayName.trim();
+    const normalizedName = trimmedName.toLowerCase();
+    const exists = users.some((user) => user.name.toLowerCase() === normalizedName);
+    if (exists) {
+      setAuthError("That name already exists. Sign in or choose another.");
+      return;
+    }
+
+    const nextUser = {
+      id: crypto.randomUUID(),
+      name: trimmedName,
+      password,
+      createdAt: new Date().toISOString(),
+    };
+    setUsers((prev) => [nextUser, ...prev]);
+    setAuth({ loggedIn: true, name: trimmedName, walletAddress });
+    setPassword("");
+    setAuthError("");
+  }
+
+  async function connectPhantom() {
+    if (typeof window === "undefined") return;
+    const provider = window.solana;
+    if (!provider?.isPhantom) {
+      setWalletError("Phantom wallet not found. Install the extension/app first.");
+      return;
+    }
+
+    setWalletBusy(true);
+    setWalletError("");
+    try {
+      const response = await provider.connect();
+      const publicKey =
+        typeof response?.publicKey?.toString === "function"
+          ? response.publicKey.toString()
+          : "";
+      setWalletAddress(publicKey);
+      if (auth.loggedIn) {
+        setAuth((prev) => ({ ...prev, walletAddress: publicKey }));
+      }
+    } catch (error) {
+      setWalletError(`Wallet connection failed: ${String(error)}`);
+    } finally {
+      setWalletBusy(false);
+    }
+  }
+
+  async function disconnectPhantom() {
+    if (typeof window !== "undefined" && window.solana?.isPhantom) {
+      try {
+        await window.solana.disconnect();
+      } catch {
+        // Ignore disconnect errors and still clear local state.
+      }
+    }
+    setWalletAddress("");
+    setWalletError("");
+    if (auth.loggedIn) {
+      setAuth((prev) => ({ ...prev, walletAddress: "" }));
+    }
+  }
+
   function logout() {
-    setAuth({ loggedIn: false, name: "" });
+    setAuth({ loggedIn: false, name: "", walletAddress: walletAddress || "" });
     setPassword("");
     setAuthError("");
   }
@@ -329,6 +523,11 @@ export default function App() {
           weight: x.weight,
         })),
       };
+
+      if (aiMode !== "live") {
+        setAiText(buildMockCoachFeedback(sessionSummary));
+        return;
+      }
   
       const prompt = `
   You are a practical strength & fitness coach.
@@ -364,11 +563,95 @@ export default function App() {
       const content = data?.choices?.[0]?.message?.content ?? "No response.";
       setAiText(content);
     } catch (err) {
+      const fallbackSummary = {
+        name: activeSession.name,
+        date: activeSession.createdAt,
+        exercises: activeSession.exercises.map((x) => ({
+          exercise: x.name,
+          sets: x.sets,
+          reps: x.reps,
+          weight: x.weight,
+        })),
+      };
       setAiText(
-        `AI request failed.\n\nCommon fixes:\n- Check .env.local has VITE_OPENROUTER_API_KEY=\n- Restart bun run dev after editing env\n\nError:\n${String(err)}`
+        `Live GPT request failed, showing local mock feedback instead.\nError: ${String(err)}\n\n${buildMockCoachFeedback(fallbackSummary)}`
       );
     } finally {
       setAiLoading(false);
+    }
+  }
+
+  async function generateWorkoutPlan() {
+    setPlanLoading(true);
+    setPlanText("");
+
+    const payload = {
+      minutes: Number(planMinutes) || 45,
+      focus: planFocus.trim() || "chest",
+      objective: planObjective.trim(),
+      soreness: planSoreness,
+    };
+
+    try {
+      if (aiMode !== "live") {
+        setPlanText(buildMockWorkoutPlan(payload));
+        return;
+      }
+
+      const apiKey = import.meta.env.VITE_OPENROUTER_API_KEY;
+      if (!apiKey) {
+        throw new Error(
+          "Missing VITE_OPENROUTER_API_KEY. Add it to .env.local and restart the dev server."
+        );
+      }
+
+      const prompt = `
+You are an expert hypertrophy coach.
+Create a practical gym workout plan that matches the user constraints.
+Prioritize muscle growth, safety, and clear timing.
+
+User constraints:
+- Session length: ${payload.minutes} minutes
+- Focus muscle: ${payload.focus}
+- Goal: ${payload.objective || "Muscle growth"}
+- Wants to be sore tomorrow: ${payload.soreness ? "yes" : "no"}
+
+Format response exactly as:
+1) Session structure with timestamps
+2) Exercises with sets x reps x rest
+3) Intensity techniques (if useful)
+4) Quick coaching cues (3 bullets)
+5) Next-session progression rule (2 bullets)
+      `.trim();
+
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text);
+      }
+
+      const data = await res.json();
+      const content = data?.choices?.[0]?.message?.content ?? "No response.";
+      setPlanText(content);
+    } catch (error) {
+      setPlanText(
+        `Live planner failed, showing local mock plan instead.\nError: ${String(error)}\n\n${buildMockWorkoutPlan(
+          payload
+        )}`
+      );
+    } finally {
+      setPlanLoading(false);
     }
   }
   
@@ -390,10 +673,39 @@ export default function App() {
               track every set.
             </h1>
             <p className="mt-3 text-sm text-zinc-300">
-              Your sessions stay private on this device. Sign in to continue.
+              Your sessions stay private on this device. Sign in or create an account.
             </p>
 
-            <form onSubmit={login} className="mt-6 grid gap-4">
+            <div className="mt-6 grid grid-cols-2 gap-2 rounded-2xl border border-zinc-800 bg-zinc-950/70 p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode("signin");
+                  setAuthError("");
+                }}
+                className={[
+                  "min-h-11 rounded-xl text-sm font-medium",
+                  authMode === "signin" ? "bg-white text-black" : "text-zinc-300",
+                ].join(" ")}
+              >
+                Sign In
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode("create");
+                  setAuthError("");
+                }}
+                className={[
+                  "min-h-11 rounded-xl text-sm font-medium",
+                  authMode === "create" ? "bg-white text-black" : "text-zinc-300",
+                ].join(" ")}
+              >
+                Create Account
+              </button>
+            </div>
+
+            <form onSubmit={authMode === "create" ? createAccount : login} className="mt-4 grid gap-4">
               <label className="grid gap-2">
                 <span className="text-sm text-zinc-300">Name</span>
                 <input
@@ -418,15 +730,46 @@ export default function App() {
 
               <button
                 type="submit"
-                disabled={!canLogin}
+                disabled={authMode === "create" ? !canCreateAccount : !canLogin}
                 className="min-h-12 rounded-2xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Enter App
+                {authMode === "create" ? "Create & Enter" : "Enter App"}
               </button>
             </form>
 
-            <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 text-xs text-zinc-400">
-              Demo login only for now. Next step can be signup/reset/biometric flows.
+            <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-zinc-300">
+                  {walletAddress
+                    ? `Wallet: ${walletAddress.slice(0, 4)}...${walletAddress.slice(-4)}`
+                    : "No wallet connected"}
+                </p>
+                {walletAddress ? (
+                  <button
+                    type="button"
+                    onClick={disconnectPhantom}
+                    className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300"
+                  >
+                    Disconnect
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={connectPhantom}
+                    disabled={walletBusy}
+                    className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 disabled:opacity-50"
+                  >
+                    {walletBusy ? "Connecting..." : "Connect Phantom"}
+                  </button>
+                )}
+              </div>
+              {walletError ? (
+                <p className="mt-2 text-xs text-rose-300">{walletError}</p>
+              ) : (
+                <p className="mt-2 text-xs text-zinc-400">
+                  Phantom connection is optional and links your wallet to this local profile.
+                </p>
+              )}
             </div>
           </section>
         </div>
@@ -443,14 +786,39 @@ export default function App() {
             <p className="mt-2 max-w-2xl text-sm text-zinc-300 sm:text-base">
               Welcome back, {auth.name || "Athlete"}.
             </p>
+            <p className="mt-1 text-xs text-zinc-400">
+              {auth.walletAddress
+                ? `Phantom ${auth.walletAddress.slice(0, 4)}...${auth.walletAddress.slice(-4)}`
+                : "Phantom not connected"}
+            </p>
           </div>
-          <button
-            type="button"
-            onClick={logout}
-            className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
-          >
-            Log out
-          </button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            {auth.walletAddress ? (
+              <button
+                type="button"
+                onClick={disconnectPhantom}
+                className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
+              >
+                Disconnect Wallet
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={connectPhantom}
+                disabled={walletBusy}
+                className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
+              >
+                {walletBusy ? "Connecting..." : "Connect Wallet"}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={logout}
+              className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
+            >
+              Log out
+            </button>
+          </div>
         </header>
 
         <nav className="mb-6 grid grid-cols-2 gap-2 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-1">
@@ -478,6 +846,88 @@ export default function App() {
 
         {page === "workout" ? (
           <>
+            <section className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h2 className="text-xl font-semibold">AI Workout Planner</h2>
+                  <p className="mt-1 text-sm text-zinc-400">
+                    Build a custom workout from your time and goal.
+                  </p>
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Mode: {aiMode === "live" ? "Live GPT (uses tokens)" : "Mock Test (no tokens)"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAiMode((prev) => (prev === "live" ? "mock" : "live"))}
+                  className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900"
+                >
+                  Switch to {aiMode === "live" ? "Mock" : "Live"}
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-2">
+                  <span className="text-sm text-zinc-300">Minutes Available</span>
+                  <input
+                    type="number"
+                    min="20"
+                    step="5"
+                    value={planMinutes}
+                    onChange={(event) => setPlanMinutes(event.target.value)}
+                    className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm text-zinc-300">Focus Muscle</span>
+                  <input
+                    value={planFocus}
+                    onChange={(event) => setPlanFocus(event.target.value)}
+                    placeholder="Chest"
+                    className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
+                  />
+                </label>
+              </div>
+
+              <label className="mt-3 grid gap-2">
+                <span className="text-sm text-zinc-300">Goal</span>
+                <textarea
+                  value={planObjective}
+                  onChange={(event) => setPlanObjective(event.target.value)}
+                  rows={3}
+                  className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
+                />
+              </label>
+
+              <label className="mt-3 inline-flex items-center gap-2 text-sm text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={planSoreness}
+                  onChange={(event) => setPlanSoreness(event.target.checked)}
+                />
+                Make it high stimulus (likely sore tomorrow)
+              </label>
+
+              <button
+                type="button"
+                onClick={generateWorkoutPlan}
+                disabled={planLoading}
+                className="mt-4 min-h-11 w-full rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40 sm:w-auto"
+              >
+                {planLoading ? "Planning..." : "Generate Workout Plan"}
+              </button>
+
+              {planText ? (
+                <pre className="mt-4 whitespace-pre-wrap rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-100">
+                  {planText}
+                </pre>
+              ) : (
+                <p className="mt-4 text-sm text-zinc-400">
+                  Example: 45 minutes, chest, and goal to build size with high soreness.
+                </p>
+              )}
+            </section>
+
             <section className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
               <article className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
                 <p className="text-sm text-zinc-400">Sessions</p>
@@ -698,16 +1148,28 @@ export default function App() {
       <p className="mt-1 text-sm text-zinc-400">
         Get quick feedback on this workout session.
       </p>
+      <p className="mt-1 text-xs text-zinc-500">
+        Mode: {aiMode === "live" ? "Live GPT (uses tokens)" : "Mock Test (no tokens)"}
+      </p>
     </div>
 
-    <button
-      type="button"
-      onClick={getAiFeedback}
-      disabled={!activeSession || activeSession.exercises.length === 0 || aiLoading}
-      className="min-h-11 w-full rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40 sm:w-auto"
-    >
-      {aiLoading ? "Thinking..." : "Get Feedback"}
-    </button>
+    <div className="flex w-full flex-col gap-2 sm:w-auto">
+      <button
+        type="button"
+        onClick={() => setAiMode((prev) => (prev === "live" ? "mock" : "live"))}
+        className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900"
+      >
+        Switch to {aiMode === "live" ? "Mock" : "Live"}
+      </button>
+      <button
+        type="button"
+        onClick={getAiFeedback}
+        disabled={!activeSession || activeSession.exercises.length === 0 || aiLoading}
+        className="min-h-11 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40"
+      >
+        {aiLoading ? "Thinking..." : "Get Feedback"}
+      </button>
+    </div>
   </div>
 
   {aiText ? (
