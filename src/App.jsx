@@ -187,8 +187,6 @@ export default function App() {
   const [walletError, setWalletError] = useState("");
   const [sessions, setSessions] = useState(() => loadSessions());
   const [activeSessionId, setActiveSessionId] = useState(null);
-  const [search, setSearch] = useState("");
-  const [sessionName, setSessionName] = useState("Push Day");
   const [exerciseName, setExerciseName] = useState("");
   const [sets, setSets] = useState("3");
   const [reps, setReps] = useState("10");
@@ -205,7 +203,6 @@ export default function App() {
   const [planLoading, setPlanLoading] = useState(false);
   const [aiMode, setAiMode] = useState(() => localStorage.getItem(AI_MODE_KEY) || initialAiMode);
   const [page, setPage] = useState("home");
-  const [tab, setTab] = useState("sessions");
   const [chartRange, setChartRange] = useState("90d");
 
 
@@ -235,12 +232,6 @@ export default function App() {
       setActiveSessionId(sessions[0].id);
     }
   }, [sessions, activeSessionId]);
-
-  const visibleSessions = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    if (!needle) return sessions;
-    return sessions.filter((session) => session.name.toLowerCase().includes(needle));
-  }, [sessions, search]);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
@@ -360,7 +351,6 @@ export default function App() {
     };
   }, [sessions, chartRange]);
 
-  const canCreateSession = sessionName.trim().length > 0;
   const canLogin = displayName.trim().length >= 2 && password.trim().length >= 4;
   const canCreateAccount = displayName.trim().length >= 2 && password.trim().length >= 6;
   const canAddExercise =
@@ -369,12 +359,6 @@ export default function App() {
     Number(sets) > 0 &&
     Number(reps) > 0 &&
     Number(weight) >= 0;
-
-  function createSession(event) {
-    event.preventDefault();
-    if (!canCreateSession) return;
-    startWorkoutNow(sessionName.trim());
-  }
 
   function startWorkoutNow(workoutName) {
     const name = workoutName?.trim() || "Workout";
@@ -387,7 +371,6 @@ export default function App() {
     };
     setSessions((prev) => [created, ...prev]);
     setActiveSessionId(created.id);
-    setTab("exercises");
     setPage("log");
   }
 
@@ -986,137 +969,29 @@ Format response exactly as:
               </article>
             </section>
 
-            <nav className="mb-4 grid grid-cols-2 gap-2 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-1 lg:hidden">
-              <button
-                type="button"
-                onClick={() => setTab("sessions")}
-                className={[
-                  "min-h-11 rounded-xl px-3 py-2 text-sm font-medium",
-                  tab === "sessions" ? "bg-white text-black" : "bg-transparent text-zinc-300",
-                ].join(" ")}
-              >
-                Sessions
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab("exercises")}
-                className={[
-                  "min-h-11 rounded-xl px-3 py-2 text-sm font-medium",
-                  tab === "exercises" ? "bg-white text-black" : "bg-transparent text-zinc-300",
-                ].join(" ")}
-              >
-                Exercise Log
-              </button>
-            </nav>
-
-            <div className="grid gap-6 lg:grid-cols-2">
-              <section
-                className={[
-                  "rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4",
-                  tab === "sessions" ? "block" : "hidden",
-                  "lg:block",
-                ].join(" ")}
-              >
-                <h2 className="text-xl font-semibold">Sessions</h2>
-
-            <form onSubmit={createSession} className="mt-4 flex flex-col gap-2 sm:flex-row">
-              <input
-                value={sessionName}
-                onChange={(event) => setSessionName(event.target.value)}
-                placeholder="e.g., Pull Day"
-                className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
-              />
-              <button
-                type="submit"
-                disabled={!canCreateSession}
-                className="min-h-11 rounded-xl bg-white px-4 py-2 font-semibold text-black disabled:opacity-40"
-              >
-                Create
-              </button>
-            </form>
-
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Filter sessions"
-              className="mt-3 w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
-            />
-
-            <div className="mt-4 grid gap-3">
-              {visibleSessions.length === 0 ? (
-                <p className="rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-zinc-300">
-                  No sessions match your filter.
-                </p>
-              ) : (
-                visibleSessions.map((session) => {
-                  const isActive = session.id === activeSessionId;
-                  return (
-                    <article
-                      key={session.id}
-                      className={[
-                        "rounded-2xl border p-4",
-                        isActive ? "border-white/30 bg-white/5" : "border-zinc-800 bg-zinc-950",
-                      ].join(" ")}
-                    >
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                        <button
-                          type="button"
-                          className="min-w-0 flex-1 text-left"
-                          onClick={() => {
-                            setActiveSessionId(session.id);
-                            setTab("exercises");
-                          }}
-                        >
-                          <p className="break-words text-lg font-semibold">{session.name}</p>
-                          <p className="mt-1 text-sm text-zinc-400">
-                            {formatDate(session.createdAt)} | {session.exercises.length} exercises
-                          </p>
-                          <p
-                            className={[
-                              "mt-2 inline-block rounded-full px-2 py-1 text-xs",
-                              session.complete
-                                ? "bg-emerald-500/20 text-emerald-300"
-                                : "bg-zinc-700 text-zinc-200",
-                            ].join(" ")}
-                          >
-                            {session.complete ? "Complete" : "In Progress"}
-                          </p>
-                        </button>
-                        <div className="flex gap-2 sm:flex-col">
-                          <button
-                            type="button"
-                            onClick={() => toggleSessionComplete(session.id)}
-                            className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900"
-                          >
-                            Toggle
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => deleteSession(session.id)}
-                            className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })
-              )}
-            </div>
-              </section>
-
-              <section
-                className={[
-                  "rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4",
-                  tab === "exercises" ? "block" : "hidden",
-                  "lg:block",
-                ].join(" ")}
-              >
+            <section className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
                 <h2 className="text-xl font-semibold">Exercise Log</h2>
                 <p className="mt-1 text-sm text-zinc-400">
-                  {activeSession ? `Adding to: ${activeSession.name}` : "Select a session first"}
+                  {activeSession ? `Adding to: ${activeSession.name}` : "Start a workout first"}
                 </p>
+                {activeSession ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSessionComplete(activeSession.id)}
+                      className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900"
+                    >
+                      {activeSession.complete ? "Mark In Progress" : "Mark Complete"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteSession(activeSession.id)}
+                      className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-900"
+                    >
+                      Delete Session
+                    </button>
+                  </div>
+                ) : null}
 
             <form onSubmit={addExercise} className="mt-4 grid gap-4">
               <label className="grid gap-2">
@@ -1260,8 +1135,7 @@ Format response exactly as:
                 </ul>
               )}
             </div>
-              </section>
-            </div>
+            </section>
           </>
         ) : page === "start" ? (
           <section className="grid gap-6">
