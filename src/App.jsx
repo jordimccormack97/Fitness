@@ -31,6 +31,16 @@ const EXERCISE_OPTIONS_BY_DAY = {
     "Hamstring Curl",
     "Standing Calf Raise",
   ],
+  fullbody: [
+    "Back Squat",
+    "Romanian Deadlift",
+    "Barbell Bench Press",
+    "Lat Pulldown",
+    "Seated Shoulder Press",
+    "Walking Lunge",
+    "Cable Row",
+    "Plank",
+  ],
 };
 
 function getSessionDayType(sessionName = "") {
@@ -38,15 +48,10 @@ function getSessionDayType(sessionName = "") {
   if (lower.includes("push")) return "push";
   if (lower.includes("pull")) return "pull";
   if (lower.includes("leg")) return "leg";
+  if (lower.includes("full body") || lower.includes("fullbody")) return "fullbody";
   return null;
 }
 
-const VOICE_NEXT_ACTIONS = [
-  { id: "generate", label: "Generate Workout Plan" },
-  { id: "duration", label: "Set Workout Duration" },
-  { id: "type", label: "Set Workout Type" },
-  { id: "intensity", label: "Set Intensity Goal" },
-];
 const VOICE_DURATION_OPTIONS = [30, 45, 60, 75];
 const VOICE_TYPE_OPTIONS = ["Push", "Pull", "Legs", "Full Body"];
 const VOICE_INTENSITY_OPTIONS = ["Light", "Moderate", "Hard"];
@@ -455,6 +460,7 @@ export default function App() {
   const [aiMode, setAiMode] = useState(() => localStorage.getItem(AI_MODE_KEY) || initialAiMode);
   const [page, setPage] = useState(() => (loadAuth().loggedIn ? "start" : "home"));
   const [startView, setStartView] = useState("quick");
+  const [plannerEntryMode, setPlannerEntryMode] = useState("menu");
   const [logDayType, setLogDayType] = useState("");
   const [logExerciseStage, setLogExerciseStage] = useState("day");
   const [logNeedsTypeSelection, setLogNeedsTypeSelection] = useState(false);
@@ -473,6 +479,11 @@ export default function App() {
     type: "",
     intensity: "",
   });
+  const [manualTypeSelected, setManualTypeSelected] = useState(false);
+  const [manualDurationSelected, setManualDurationSelected] = useState(false);
+  const [manualIntensitySelected, setManualIntensitySelected] = useState(false);
+  const [manualIntensityChoice, setManualIntensityChoice] = useState("");
+  const [manualGoalEnabled, setManualGoalEnabled] = useState(false);
 
 
 
@@ -545,7 +556,7 @@ export default function App() {
 
   const exerciseOptions = useMemo(() => {
     if (logExerciseStage === "day") {
-      return ["Push Day", "Pull Day", "Leg Day"];
+      return ["Push Day", "Pull Day", "Leg Day", "Full Body Day"];
     }
     const dayType = logDayType || getSessionDayType(activeSession?.name || "");
     if (!dayType) return [];
@@ -809,26 +820,6 @@ export default function App() {
     );
   }
 
-  function resetPlannedWorkout() {
-    if (!activeSession?.fromPlan) return;
-    setSessions((prev) =>
-      prev.map((session) =>
-        session.id === activeSession.id
-          ? {
-              ...session,
-              complete: false,
-              finishedAt: null,
-              exercises: (session.exercises ?? []).map((exercise) => ({
-                ...exercise,
-                completedSets: 0,
-                completed: false,
-              })),
-            }
-          : session
-      )
-    );
-  }
-
   function deleteSession(sessionId) {
     setSessions((prev) => prev.filter((session) => session.id !== sessionId));
   }
@@ -885,6 +876,9 @@ export default function App() {
       "leg day": "Leg Day",
       leg: "Leg Day",
       legs: "Leg Day",
+      "full body day": "Full Body Day",
+      "full body": "Full Body Day",
+      fullbody: "Full Body Day",
     };
 
     if (logExerciseStage === "day") {
@@ -984,32 +978,60 @@ export default function App() {
     recognition.start();
   }
 
-  function speakResponse(text) {
-    if (typeof window === "undefined" || !window.speechSynthesis || !text) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    window.speechSynthesis.speak(utterance);
-  }
-
   async function askMistralVoiceCoach(voicePrompt = "") {
     const promptText = (voicePrompt || voiceTranscript).trim();
     if (!promptText) return;
     setVoiceLoading(true);
     setVoiceResponse("");
     setVoiceFlowStep("actions");
-    setVoiceFlowSelections({ duration: "", type: "", intensity: "" });
+    const durationMatch = promptText.match(/(\d{2,3})\s*(?:min|mins|minute|minutes)\b/i);
+    const detectedDuration = durationMatch ? `${Number(durationMatch[1])} min` : "";
+    const detectedType = /full\s*body/i.test(promptText)
+      ? "Full Body"
+      : /push/i.test(promptText)
+        ? "Push"
+        : /pull/i.test(promptText)
+          ? "Pull"
+          : /leg/i.test(promptText)
+            ? "Legs"
+            : "";
+    const detectedIntensity = /hard|intense|sore|heavy/i.test(promptText)
+      ? "Hard"
+      : /light|easy/i.test(promptText)
+        ? "Light"
+        : /moderate/i.test(promptText)
+          ? "Moderate"
+          : "";
+
+    const nextSelections = {
+      duration: detectedDuration,
+      type: detectedType,
+      intensity: detectedIntensity,
+    };
+    setVoiceFlowSelections(nextSelections);
+    if (detectedDuration) {
+      setPlanMinutes(String(Number.parseInt(detectedDuration, 10) || 45));
+    }
+    if (detectedType) {
+      setPlanFocus(detectedType);
+    }
+    if (detectedIntensity) {
+      setPlanSoreness(detectedIntensity === "Hard");
+    }
+    const missing = [];
+    if (!detectedDuration) missing.push("duration");
+    if (!detectedType) missing.push("type");
+    if (!detectedIntensity) missing.push("intensity");
 
     const guidedResponse = [
       `Got it: "${promptText}"`,
       "",
-      "What would you like to do next?",
-      "Choose one of the action buttons below.",
+      missing.length === 0
+        ? "I captured duration, type, and intensity. You can generate your workout plan now."
+        : `I still need: ${missing.join(", ")}.`,
     ].join("\n");
 
     setVoiceResponse(guidedResponse);
-    speakResponse("Got it. Do you want me to generate a workout plan, or tell me how long you want to workout?");
     setVoiceLoading(false);
   }
 
@@ -1061,19 +1083,16 @@ export default function App() {
     if (actionId === "duration") {
       setVoiceFlowStep("duration");
       setVoiceResponse("Select your workout duration.");
-      speakResponse("How long do you want to workout?");
       return;
     }
     if (actionId === "type") {
       setVoiceFlowStep("type");
       setVoiceResponse("Select your workout type.");
-      speakResponse("What workout type do you want?");
       return;
     }
     if (actionId === "intensity") {
       setVoiceFlowStep("intensity");
       setVoiceResponse("Select your intensity goal.");
-      speakResponse("Do you want light, moderate, or hard intensity?");
     }
   }
 
@@ -1149,6 +1168,7 @@ export default function App() {
 
   function openStartPlanner() {
     setStartView("planner");
+    setPlannerEntryMode("menu");
     setPage("start");
     requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
   }
@@ -1292,7 +1312,7 @@ export default function App() {
     const sessionDayType = getSessionDayType(activeSession.name);
     if (!activeSession.startedFromStartMenu && !sessionDayType) {
       setNextStepText(
-        "What type of workout are you planning to do? Select Push Day, Pull Day, or Leg Day first."
+        "What type of workout are you planning to do? Select Push Day, Pull Day, Leg Day, or Full Body Day first."
       );
       return;
     }
@@ -1506,6 +1526,12 @@ Return format:
       setPlanRevisionLoading(false);
     }
   }
+
+  function backToPlannerInputs() {
+    setPlanText("");
+    setShowPlanChanges(false);
+    setRevisedPlanText("");
+  }
   
 
   if (!auth.loggedIn) {
@@ -1574,8 +1600,8 @@ Return format:
   return (
     <main className="min-h-dvh overflow-x-hidden bg-zinc-950 text-zinc-100">
       <div className="mx-auto w-full max-w-6xl px-4 pt-5 pb-[calc(6rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-6 lg:px-8 lg:pb-12">
-        <header className="mb-6 flex items-start justify-between gap-4">
-          <div className="flex items-start gap-3">
+        <header className="mb-6 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
             <div className="relative">
               <button
                 type="button"
@@ -1619,27 +1645,15 @@ Return format:
               ) : null}
             </div>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">J FIT</h1>
+              <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">J FIT 🔥</h1>
             </div>
           </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <button
-              type="button"
-              onClick={() => setPage("home")}
-              className={[
-                "min-h-10 rounded-xl border px-3 py-2 text-sm",
-                page === "home"
-                  ? "border-white bg-white text-black"
-                  : "border-zinc-700 text-zinc-300 hover:bg-zinc-900",
-              ].join(" ")}
-            >
-              Home
-            </button>
+          <div className="flex items-center gap-2">
             {auth.walletAddress ? (
               <button
                 type="button"
                 onClick={disconnectPhantom}
-                className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
+                className="min-h-10 whitespace-nowrap rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
               >
                 Disconnect Wallet
               </button>
@@ -1648,7 +1662,7 @@ Return format:
                 type="button"
                 onClick={connectPhantom}
                 disabled={walletBusy}
-                className="min-h-10 rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
+                className="min-h-10 whitespace-nowrap rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
               >
                 {walletBusy ? "Connecting..." : "Connect Wallet"}
               </button>
@@ -1735,10 +1749,10 @@ Return format:
                         </p>
                         <button
                           type="button"
-                          onClick={resetPlannedWorkout}
+                          onClick={() => setPage("dashboard")}
                           className="mt-5 min-h-10 rounded-xl border border-emerald-300/40 px-4 py-2 text-sm text-emerald-100 hover:bg-emerald-500/20"
                         >
-                          View Workout Again
+                          View Results
                         </button>
                       </div>
                     ) : activeSession.exercises.length === 0 ? (
@@ -1883,7 +1897,7 @@ Return format:
                       <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
                         <p className="text-sm font-medium text-zinc-200">Workout Type</p>
                         <div className="mt-3 flex flex-wrap gap-2">
-                          {["Push Day", "Pull Day", "Leg Day"]
+                          {["Push Day", "Pull Day", "Leg Day", "Full Body Day"]
                             .filter((day) => day.toLowerCase() !== (activeSession?.name || "").toLowerCase())
                             .map((day) => (
                               <button
@@ -2104,8 +2118,8 @@ Return format:
               <>
                 <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
                 <h2 className="text-xl font-semibold">Start Workout</h2>
-                  <div className="mt-4 grid gap-2 sm:grid-cols-3">
-                    {["Push Day", "Pull Day", "Leg Day"].map((preset) => (
+                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                    {["Push Day", "Pull Day", "Leg Day", "Full Body Day"].map((preset) => (
                       <button
                         key={preset}
                         type="button"
@@ -2128,6 +2142,39 @@ Return format:
               </>
             ) : (
               <>
+                {!planText ? (
+                  <>
+                {plannerEntryMode === "menu" ? (
+                  <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+                    <h2 className="text-xl font-semibold">AI Workout Planner</h2>
+                    <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={() => setPlannerEntryMode("voice")}
+                        className="min-h-11 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black"
+                      >
+                        Describe with Voice
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPlannerEntryMode("manual");
+                          setManualTypeSelected(false);
+                          setManualDurationSelected(false);
+                          setManualIntensitySelected(false);
+                          setManualIntensityChoice("");
+                          setManualGoalEnabled(false);
+                          setPlanObjective("");
+                        }}
+                        className="min-h-11 rounded-xl border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-900"
+                      >
+                        Manually Select
+                      </button>
+                    </div>
+                  </article>
+                ) : null}
+
+                {plannerEntryMode === "voice" ? (
                 <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
@@ -2176,7 +2223,18 @@ Return format:
                       </div>
                       <div className="mt-3 grid gap-2 sm:grid-cols-2">
                         {voiceFlowStep === "actions"
-                          ? VOICE_NEXT_ACTIONS.map((action) => (
+                          ? [
+                              { id: "generate", label: "Generate Workout Plan" },
+                              ...(!voiceFlowSelections.duration
+                                ? [{ id: "duration", label: "Set Workout Duration" }]
+                                : []),
+                              ...(!voiceFlowSelections.type
+                                ? [{ id: "type", label: "Set Workout Type" }]
+                                : []),
+                              ...(!voiceFlowSelections.intensity
+                                ? [{ id: "intensity", label: "Set Intensity Goal" }]
+                                : []),
+                            ].map((action) => (
                               <button
                                 key={action.id}
                                 type="button"
@@ -2257,7 +2315,9 @@ Return format:
                     </>
                   ) : null}
                 </article>
+                ) : null}
 
+                {plannerEntryMode === "manual" ? (
                 <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
@@ -2287,60 +2347,143 @@ Return format:
                     </div>
                   </div>
 
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                    <label className="grid gap-2">
-                      <span className="text-sm text-zinc-300">Minutes Available</span>
-                      <input
-                        type="number"
-                        min="20"
-                        step="5"
-                        value={planMinutes}
-                        onChange={(event) => setPlanMinutes(event.target.value)}
-                        className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
-                      />
-                    </label>
-                    <label className="grid gap-2">
-                      <span className="text-sm text-zinc-300">Focus Muscle</span>
-                      <input
-                        value={planFocus}
-                        onChange={(event) => setPlanFocus(event.target.value)}
-                        placeholder="Chest"
-                        className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
-                      />
-                    </label>
+                  <div className="mt-4 grid gap-4">
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                      <p className="text-sm font-medium text-zinc-200">1) Select Workout Type</p>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        {VOICE_TYPE_OPTIONS.map((type) => (
+                          <button
+                            key={`manual-type-${type}`}
+                            type="button"
+                            onClick={() => {
+                              setPlanFocus(type);
+                              setManualTypeSelected(true);
+                            }}
+                            className={[
+                              "min-h-10 rounded-xl border px-3 py-2 text-sm",
+                              planFocus === type && manualTypeSelected
+                                ? "border-white bg-white text-black"
+                                : "border-zinc-700 text-zinc-200 hover:bg-zinc-900",
+                            ].join(" ")}
+                          >
+                            {type}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                      <p className="text-sm font-medium text-zinc-200">2) Select Duration</p>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-4">
+                        {VOICE_DURATION_OPTIONS.map((minutes) => (
+                          <button
+                            key={`manual-duration-${minutes}`}
+                            type="button"
+                            onClick={() => {
+                              setPlanMinutes(String(minutes));
+                              setManualDurationSelected(true);
+                            }}
+                            disabled={!manualTypeSelected}
+                            className={[
+                              "min-h-10 rounded-xl border px-3 py-2 text-sm disabled:opacity-40",
+                              Number(planMinutes) === minutes && manualDurationSelected
+                                ? "border-white bg-white text-black"
+                                : "border-zinc-700 text-zinc-200 hover:bg-zinc-900",
+                            ].join(" ")}
+                          >
+                            {minutes} min
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                      <p className="text-sm font-medium text-zinc-200">3) Select Intensity</p>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                        {VOICE_INTENSITY_OPTIONS.map((intensity) => (
+                          <button
+                            key={`manual-intensity-${intensity}`}
+                            type="button"
+                            onClick={() => {
+                              setPlanSoreness(intensity === "Hard");
+                              setManualIntensitySelected(true);
+                              setManualIntensityChoice(intensity);
+                            }}
+                            disabled={!manualTypeSelected || !manualDurationSelected}
+                            className={[
+                              "min-h-10 rounded-xl border px-3 py-2 text-sm disabled:opacity-40",
+                              manualIntensityChoice === intensity
+                                ? "border-white bg-white text-black"
+                                : "border-zinc-700 text-zinc-200 hover:bg-zinc-900",
+                            ].join(" ")}
+                          >
+                            {intensity}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                      <p className="text-sm font-medium text-zinc-200">4) Optional Goal</p>
+                      <label className="mt-2 inline-flex items-center gap-2 text-sm text-zinc-300">
+                        <input
+                          type="checkbox"
+                          checked={manualGoalEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setManualGoalEnabled(enabled);
+                            if (!enabled) setPlanObjective("");
+                          }}
+                          disabled={!manualTypeSelected || !manualDurationSelected || !manualIntensitySelected}
+                        />
+                        Add goal details
+                      </label>
+                      {manualGoalEnabled ? (
+                        <textarea
+                          value={planObjective}
+                          onChange={(event) => setPlanObjective(event.target.value)}
+                          rows={3}
+                          placeholder="Optional: describe your workout goal"
+                          disabled={!manualTypeSelected || !manualDurationSelected || !manualIntensitySelected}
+                          className="mt-2 w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20 disabled:opacity-40"
+                        />
+                      ) : null}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={generateWorkoutPlan}
+                      disabled={
+                        planLoading ||
+                        !manualTypeSelected ||
+                        !manualDurationSelected ||
+                        !manualIntensitySelected
+                      }
+                      className="min-h-11 w-full rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40"
+                    >
+                      {planLoading ? "Planning..." : "Generate Workout Plan"}
+                    </button>
                   </div>
-
-                  <label className="mt-3 grid gap-2">
-                    <span className="text-sm text-zinc-300">Goal</span>
-                    <textarea
-                      value={planObjective}
-                      onChange={(event) => setPlanObjective(event.target.value)}
-                      rows={3}
-                      className="rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 outline-none focus:ring-2 focus:ring-white/20"
-                    />
-                  </label>
-
-                  <label className="mt-3 inline-flex items-center gap-2 text-sm text-zinc-300">
-                    <input
-                      type="checkbox"
-                      checked={planSoreness}
-                      onChange={(event) => setPlanSoreness(event.target.checked)}
-                    />
-                    Make it high stimulus (likely sore tomorrow)
-                  </label>
-
-                  <button
-                    type="button"
-                    onClick={generateWorkoutPlan}
-                    disabled={planLoading}
-                    className="mt-4 min-h-11 w-full rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40 sm:w-auto"
-                  >
-                    {planLoading ? "Planning..." : "Generate Workout Plan"}
-                  </button>
                 </article>
+                ) : null}
+                  </>
+                ) : null}
 
                 {planText ? (
                   <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+                    <div className="mb-4">
+                      <button
+                        type="button"
+                        onClick={backToPlannerInputs}
+                        onTouchEnd={(event) => {
+                          event.preventDefault();
+                          backToPlannerInputs();
+                        }}
+                        className="min-h-10 touch-manipulation rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-900"
+                      >
+                        Back to Planner
+                      </button>
+                    </div>
                     <div className="mb-4 flex flex-wrap gap-2 text-xs">
                       <span className="rounded-full bg-zinc-800 px-3 py-1 text-zinc-200">
                         {Number(planMinutes) || 45} min
