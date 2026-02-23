@@ -1,16 +1,51 @@
-# React + Vite
+# Fitness App
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite workout app with AI coaching and voice-to-plan flow.
 
-Currently, two official plugins are available:
+## Local Development (Bun)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+```bash
+bun install
+bun run dev
+```
 
-## React Compiler
+## Production Build (Bun)
 
-The React Compiler is currently not compatible with SWC. See [this issue](https://github.com/vitejs/vite-plugin-react/issues/428) for tracking the progress.
+```bash
+bun run lint
+bun run build
+```
 
-## Expanding the ESLint configuration
+## Serverless Backend
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+This repo includes Netlify Functions endpoints:
+
+- `POST /api/ai/chat`
+- `POST /api/ai/transcribe`
+
+The frontend calls these endpoints directly, so API keys are not exposed in browser code.
+
+## Required Server Environment Variables
+
+Set these in Netlify (Site configuration -> Environment variables):
+
+- `MISTRAL_API_KEY` (required for planner generation)
+- `OPENROUTER_API_KEY` (required for AI coach feedback/next-step prompts)
+- `GROQ_API_KEY` (required for voice transcription)
+
+Optional:
+
+- `MISTRAL_MODEL` (default: `mistral-small-latest`)
+- `GROQ_TRANSCRIPTION_MODEL` (default: `whisper-large-v3-turbo`)
+- `GROQ_TRANSCRIPTION_LANGUAGE` (default: `en`)
+- `OPENROUTER_MODEL` (default: `openai/gpt-4o-mini`)
+
+## Deploy (Netlify)
+
+1. Push this repo to GitHub.
+2. Import the repo in Netlify.
+3. Keep detected framework as Vite.
+4. Add the environment variables above.
+5. Deploy.
+
+After deploy, open the Netlify URL on your phone using cellular data.

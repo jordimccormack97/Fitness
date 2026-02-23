@@ -1,0 +1,14 @@
+[build]
+  command = "bun run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[[redirects]]
+  from = "/api/ai/chat"
+  to = "/.netlify/functions/ai-chat"
+  status = 200
+
+[[redirects]]
+  from = "/api/ai/transcribe"
+  to = "/.netlify/functions/ai-transcribe"
+  status = 200

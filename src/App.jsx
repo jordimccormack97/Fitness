@@ -3,8 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const STORAGE_KEY = "fitness_app_sessions_v2";
 const AUTH_KEY = "fitness_app_auth_v1";
 const AI_MODE_KEY = "fitness_app_ai_mode_v1";
-const MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/chat/completions";
-const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+const AI_CHAT_ENDPOINT = "/api/ai/chat";
+const AI_TRANSCRIBE_ENDPOINT = "/api/ai/transcribe";
 const EXERCISE_OPTIONS_BY_DAY = {
   push: [
     "Barbell Bench Press",
@@ -55,6 +55,19 @@ function getSessionDayType(sessionName = "") {
 const VOICE_DURATION_OPTIONS = [30, 45, 60, 75];
 const VOICE_TYPE_OPTIONS = ["Push", "Pull", "Legs", "Full Body"];
 const VOICE_INTENSITY_OPTIONS = ["Light", "Moderate", "Hard"];
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const commaIndex = result.indexOf(",");
+      resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+    };
+    reader.onerror = () => reject(new Error("Failed to encode audio for upload."));
+    reader.readAsDataURL(blob);
+  });
+}
 
 function loadSessions() {
   try {
@@ -467,7 +480,9 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [chartRange, setChartRange] = useState("90d");
   const startWorkoutLockRef = useRef(false);
-  const recognitionRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const voiceStopTimerRef = useRef(null);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [voiceListening, setVoiceListening] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState("");
@@ -501,18 +516,24 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition || null;
-    setVoiceSupported(Boolean(SpeechRecognition));
+    setVoiceSupported(
+      Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia)
+    );
   }, []);
 
   useEffect(() => {
     return () => {
       try {
-        recognitionRef.current?.stop?.();
+        if (voiceStopTimerRef.current) {
+          window.clearTimeout(voiceStopTimerRef.current);
+          voiceStopTimerRef.current = null;
+        }
+        mediaRecorderRef.current?.stop?.();
       } catch {
         // No-op
       }
+      mediaStreamRef.current?.getTracks?.().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
       if (typeof window !== "undefined" && window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
@@ -935,47 +956,122 @@ export default function App() {
     setPage("log");
   }
 
+  function cleanupVoiceMedia() {
+    if (voiceStopTimerRef.current) {
+      window.clearTimeout(voiceStopTimerRef.current);
+      voiceStopTimerRef.current = null;
+    }
+    mediaStreamRef.current?.getTracks?.().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+    mediaRecorderRef.current = null;
+  }
+
   function stopVoiceCapture() {
     try {
-      recognitionRef.current?.stop?.();
+      if (voiceStopTimerRef.current) {
+        window.clearTimeout(voiceStopTimerRef.current);
+        voiceStopTimerRef.current = null;
+      }
+      const recorder = mediaRecorderRef.current;
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      } else {
+        cleanupVoiceMedia();
+        setVoiceListening(false);
+      }
     } catch {
       // No-op
-    } finally {
-      setVoiceListening(false);
     }
   }
 
+  async function transcribeAudioWithMistral(audioBlob) {
+    const audioBase64 = await blobToBase64(audioBlob);
+    const res = await fetch(AI_TRANSCRIBE_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        audioBase64,
+        mimeType: audioBlob.type || "audio/webm",
+        fileName: "voice-input.webm",
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Voice transcription failed: ${text}`);
+    }
+    const data = await res.json();
+    return String(data?.text ?? "").trim();
+  }
+
   function startVoiceCapture() {
+    if (voiceListening) {
+      stopVoiceCapture();
+      return;
+    }
     if (typeof window === "undefined") return;
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition || null;
-    if (!SpeechRecognition) return;
-    stopVoiceCapture();
+    if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) return;
+    setVoiceResponse("");
+    void (async () => {
+      try {
+        stopVoiceCapture();
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorder(stream);
+        const chunks = [];
+        mediaStreamRef.current = stream;
+        mediaRecorderRef.current = recorder;
 
-    const recognition = new SpeechRecognition();
-    recognitionRef.current = recognition;
-    recognition.lang = "en-US";
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    let latestTranscript = "";
+        recorder.onstart = () => {
+          setVoiceListening(true);
+        };
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            chunks.push(event.data);
+          }
+        };
+        recorder.onerror = () => {
+          setVoiceListening(false);
+          setVoiceResponse(
+            "Microphone capture failed. Please allow mic permission and try again."
+          );
+          cleanupVoiceMedia();
+        };
+        recorder.onstop = async () => {
+          setVoiceListening(false);
+          cleanupVoiceMedia();
+          if (!chunks.length) {
+            setVoiceResponse("No voice detected. Try speaking closer to the microphone.");
+            return;
+          }
+          try {
+            setVoiceLoading(true);
+            const audioBlob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+            const transcript = await transcribeAudioWithMistral(audioBlob);
+            if (!transcript) {
+              setVoiceResponse("I couldn't transcribe that audio. Please try again.");
+              return;
+            }
+            setVoiceTranscript(transcript);
+            await askMistralVoiceCoach(transcript);
+          } catch (error) {
+            setVoiceResponse(error instanceof Error ? error.message : "Voice transcription failed.");
+            return;
+          } finally {
+            setVoiceLoading(false);
+          }
+        };
 
-    recognition.onstart = () => setVoiceListening(true);
-    recognition.onend = () => {
-      setVoiceListening(false);
-      if (latestTranscript.trim()) {
-        void askMistralVoiceCoach(latestTranscript);
+        recorder.start();
+        voiceStopTimerRef.current = window.setTimeout(() => {
+          stopVoiceCapture();
+        }, 7000);
+      } catch (error) {
+        setVoiceListening(false);
+        cleanupVoiceMedia();
+        setVoiceResponse(
+          error instanceof Error ? error.message : "Unable to start microphone recording."
+        );
       }
-    };
-    recognition.onerror = () => setVoiceListening(false);
-    recognition.onresult = (event) => {
-      const transcript = Array.from(event.results)
-        .map((result) => result?.[0]?.transcript ?? "")
-        .join(" ")
-        .trim();
-      latestTranscript = transcript;
-      setVoiceTranscript(transcript);
-    };
-    recognition.start();
+    })();
   }
 
   async function askMistralVoiceCoach(voicePrompt = "") {
@@ -1118,52 +1214,22 @@ export default function App() {
   }
 
   async function requestPlannerText(prompt) {
-    const mistralKey = import.meta.env.VITE_MISTRAL_API_KEY;
-    const mistralModel = import.meta.env.VITE_MISTRAL_MODEL || "mistral-small-latest";
-    if (mistralKey) {
-      const res = await fetch(MISTRAL_ENDPOINT, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${mistralKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: mistralModel,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.4,
-        }),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Mistral planner error: ${text}`);
-      }
-      const data = await res.json();
-      return data?.choices?.[0]?.message?.content ?? "No response.";
-    }
-
-    const openRouterKey = import.meta.env.VITE_OPENROUTER_API_KEY;
-    if (!openRouterKey) {
-      throw new Error(
-        "Missing VITE_MISTRAL_API_KEY (preferred) or VITE_OPENROUTER_API_KEY."
-      );
-    }
-    const res = await fetch(OPENROUTER_ENDPOINT, {
+    const res = await fetch(AI_CHAT_ENDPOINT, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${openRouterKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "openai/gpt-4o-mini",
+        provider: "auto",
+        model: "mistral-small-latest",
         messages: [{ role: "user", content: prompt }],
+        temperature: 0.4,
       }),
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`OpenRouter planner error: ${text}`);
+      throw new Error(`Planner request failed: ${text}`);
     }
     const data = await res.json();
-    return data?.choices?.[0]?.message?.content ?? "No response.";
+    return String(data?.content ?? "No response.");
   }
 
   function openStartPlanner() {
@@ -1230,14 +1296,6 @@ export default function App() {
     setAiText("");
   
     try {
-      const apiKey = import.meta.env.VITE_OPENROUTER_API_KEY;
-  
-      if (!apiKey) {
-        throw new Error(
-          "Missing VITE_OPENROUTER_API_KEY. Add it to .env.local and restart the dev server."
-        );
-      }
-  
       const sessionSummary = {
         name: activeSession.name,
         date: activeSession.createdAt,
@@ -1266,26 +1324,24 @@ export default function App() {
   2) What to improve next session (3 bullets)
   3) Optional: form/safety reminder (1 line)
   `.trim();
-  
-      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+
+      const res = await fetch(AI_CHAT_ENDPOINT, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          provider: "openrouter",
           model: "openai/gpt-4o-mini",
           messages: [{ role: "user", content: prompt }],
         }),
       });
-  
+
       if (!res.ok) {
         const text = await res.text();
         throw new Error(text);
       }
-  
+
       const data = await res.json();
-      const content = data?.choices?.[0]?.message?.content ?? "No response.";
+      const content = String(data?.content ?? "No response.");
       setAiText(content);
     } catch (err) {
       const fallbackSummary = {
@@ -1342,13 +1398,6 @@ export default function App() {
         return;
       }
 
-      const apiKey = import.meta.env.VITE_OPENROUTER_API_KEY;
-      if (!apiKey) {
-        throw new Error(
-          "Missing VITE_OPENROUTER_API_KEY. Add it to .env.local and restart the dev server."
-        );
-      }
-
       const history = sessions
         .flatMap((session) =>
           (session.exercises ?? []).map((exercise) => ({
@@ -1380,13 +1429,11 @@ ${warmupOnly
   : "1) Warm-up ramp (2-3 sets with exact weights/reps)\n2) Working progression (3-4 sets with exact weights/reps/rest)\n3) Technique cue (1 short line)\n4) Stop rule (when to reduce weight)"}
       `.trim();
 
-      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const res = await fetch(AI_CHAT_ENDPOINT, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          provider: "openrouter",
           model: "openai/gpt-4o-mini",
           messages: [{ role: "user", content: prompt }],
         }),
@@ -1398,7 +1445,7 @@ ${warmupOnly
       }
 
       const data = await res.json();
-      const content = data?.choices?.[0]?.message?.content ?? "No response.";
+      const content = String(data?.content ?? "No response.");
       setNextStepText(content);
     } catch (error) {
       setNextStepText(
@@ -2183,15 +2230,20 @@ Return format:
                     <button
                       type="button"
                       onClick={startVoiceCapture}
-                      disabled={!voiceSupported || voiceListening || voiceLoading}
+                      disabled={!voiceSupported || voiceLoading}
                       className="min-h-11 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40"
                     >
-                      Describe Workout
+                      {voiceListening ? "Stop Recording" : "Record Workout Request"}
                     </button>
                   </div>
                   {!voiceSupported ? (
                     <p className="mt-3 text-xs text-rose-300">
-                      Voice recognition not supported in this browser.
+                      Microphone recording is not supported in this browser.
+                    </p>
+                  ) : null}
+                  {voiceListening ? (
+                    <p className="mt-3 text-xs text-zinc-400">
+                      Recording... tap stop when done.
                     </p>
                   ) : null}
                   {voiceTranscript ? (
@@ -2326,7 +2378,7 @@ Return format:
                         Mode: {aiMode === "live" ? "Live GPT (uses tokens)" : "Mock Test (no tokens)"}
                       </p>
                       <p className="mt-1 text-xs text-zinc-500">
-                        Live provider: {import.meta.env.VITE_MISTRAL_API_KEY ? "Mistral" : "OpenRouter"}
+                        Live provider: Serverless AI API
                       </p>
                     </div>
                     <div className="flex gap-2">
