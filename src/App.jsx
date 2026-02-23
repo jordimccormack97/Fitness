@@ -441,6 +441,53 @@ function buildMockWarmupRecommendation({ activeSession, targetExercise, sessions
   ].join("\n");
 }
 
+function buildMockDashboardInsight({ progress, chartRange }) {
+  if (!progress?.points?.length) {
+    return "Not enough data yet. Log a few sessions, then run AI trend analysis.";
+  }
+
+  const points = progress.points;
+  const first = points[0];
+  const last = points[points.length - 1];
+  const firstVolume = Number(first?.volume || 0);
+  const lastVolume = Number(last?.volume || 0);
+  const change = lastVolume - firstVolume;
+  const changePct = firstVolume > 0 ? (change / firstVolume) * 100 : 0;
+  const recent = points.slice(-3);
+  const prior = points.slice(-6, -3);
+  const recentAvg = recent.length
+    ? recent.reduce((sum, point) => sum + point.volume, 0) / recent.length
+    : 0;
+  const priorAvg = prior.length
+    ? prior.reduce((sum, point) => sum + point.volume, 0) / prior.length
+    : 0;
+  const recentDelta = recentAvg - priorAvg;
+  const top = progress.topExercises?.[0];
+
+  return [
+    `Trend Analysis (${chartRange.toUpperCase()})`,
+    "",
+    "1) Trend summary",
+    `- Completion rate: ${progress.completionRate.toFixed(0)}% across ${progress.filteredSessionCount} sessions.`,
+    `- Volume moved from ${firstVolume.toLocaleString()} lb to ${lastVolume.toLocaleString()} lb (${change >= 0 ? "+" : ""}${change.toLocaleString()} lb, ${changePct.toFixed(1)}%).`,
+    `- Average session volume: ${Math.round(progress.avgVolume).toLocaleString()} lb.`,
+    "",
+    "2) Improvement signal",
+    recent.length >= 2
+      ? `- Last 3 sessions vs previous 3: ${recentDelta >= 0 ? "+" : ""}${Math.round(recentDelta).toLocaleString()} lb average.`
+      : "- Need at least 6 recent logs for stronger short-term trend confidence.",
+    top
+      ? `- Highest contributor: ${top.name} at ${top.volume.toLocaleString()} lb total logged volume.`
+      : "- No dominant exercise trend yet.",
+    "",
+    "3) Next step",
+    "- Keep one anchor lift per session and progress by +1 rep or +2.5 to +5 lb each time.",
+    "- Maintain completion rate above 80% while volume rises gradually.",
+    "",
+    "(Test mode: local mock dashboard analysis, no API tokens used.)",
+  ].join("\n");
+}
+
 export default function App() {
   const initialAiMode = import.meta.env.VITE_AI_MODE === "live" ? "live" : "mock";
   const [auth, setAuth] = useState(() => loadAuth());
@@ -456,6 +503,8 @@ export default function App() {
   const [weight, setWeight] = useState("0");
   const [aiText, setAiText] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
+  const [dashboardInsightText, setDashboardInsightText] = useState("");
+  const [dashboardInsightLoading, setDashboardInsightLoading] = useState(false);
   const [nextStepText, setNextStepText] = useState("");
   const [nextStepLoading, setNextStepLoading] = useState(false);
   const [planMinutes, setPlanMinutes] = useState("45");
@@ -1467,6 +1516,83 @@ ${warmupOnly
       );
     } finally {
       setNextStepLoading(false);
+    }
+  }
+
+  async function analyzeDashboardTrends() {
+    if (!progress.points.length) {
+      setDashboardInsightText("No chart data in this range yet. Log sessions first.");
+      return;
+    }
+
+    setDashboardInsightLoading(true);
+    setDashboardInsightText("");
+    try {
+      if (aiMode !== "live") {
+        setDashboardInsightText(buildMockDashboardInsight({ progress, chartRange }));
+        return;
+      }
+
+      const payload = {
+        range: chartRange,
+        completionRate: Number(progress.completionRate.toFixed(1)),
+        avgSessionVolume: Math.round(progress.avgVolume),
+        bestSessionVolume: progress.maxVolume,
+        sessionsInRange: progress.filteredSessionCount,
+        sessionPoints: progress.points.map((point) => ({
+          date: point.date,
+          session: point.name,
+          volume: point.volume,
+          sets: point.sets,
+          exercises: point.exercises,
+          complete: point.complete,
+        })),
+        topExercises: progress.topExercises.map((exercise) => ({
+          name: exercise.name,
+          totalVolume: exercise.volume,
+          entries: exercise.count,
+        })),
+      };
+
+      const prompt = `
+You are a hypertrophy performance analyst.
+Analyze the workout dashboard data and provide specific trend and improvement feedback.
+
+Dashboard data:
+${JSON.stringify(payload, null, 2)}
+
+Respond in this exact format:
+1) Trend Snapshot (3 bullets with numbers)
+2) What Improved (2 bullets)
+3) What Is Stalling (2 bullets)
+4) Next 7 Days Plan (4 bullets with concrete progression targets)
+5) Risk Check (1 short bullet)
+      `.trim();
+
+      const res = await fetch(AI_CHAT_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "auto",
+          model: "mistral-small-latest",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.3,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text);
+      }
+      const data = await res.json();
+      setDashboardInsightText(String(data?.content ?? "No response."));
+    } catch (error) {
+      setDashboardInsightText(
+        `Live trend analysis failed, showing local mock analysis instead.\nError: ${String(
+          error
+        )}\n\n${buildMockDashboardInsight({ progress, chartRange })}`
+      );
+    } finally {
+      setDashboardInsightLoading(false);
     }
   }
 
@@ -2705,6 +2831,30 @@ Return format:
                 </p>
               </article>
             </div>
+
+            <article className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">AI Trend & Improvement Feedback</h2>
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Reads your charts for the selected range and gives progression feedback.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={analyzeDashboardTrends}
+                  disabled={dashboardInsightLoading || progress.points.length === 0}
+                  className="min-h-10 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-40"
+                >
+                  {dashboardInsightLoading ? "Analyzing..." : "Analyze Trends with AI"}
+                </button>
+              </div>
+              {dashboardInsightText ? (
+                <pre className="mt-4 whitespace-pre-wrap rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-100">
+                  {dashboardInsightText}
+                </pre>
+              ) : null}
+            </article>
 
             {progress.points.length === 0 ? (
               <p className="rounded-2xl border border-zinc-800 bg-zinc-900/30 p-4 text-zinc-300">
